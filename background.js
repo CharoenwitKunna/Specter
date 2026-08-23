@@ -3,37 +3,57 @@ const BRIDGE_URL = 'http://127.0.0.1:8765';
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+let targetTabId = null;
+
+// Ensure alarm is created and persistent across service worker reboots
+function ensureAlarm() {
+  chrome.alarms.get('attk-poll', (alarm) => {
+    if (!alarm) {
+      chrome.alarms.create('attk-poll', { periodInMinutes: 1 });
+    }
+  });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[Specter] installed');
-  try { chrome.contextMenus.create({ id: 'attk-copy-url', title: 'Copy page URL (Specter)', contexts: ['page'] }); } catch {}
-  // ATTK_ keys kept for backwards compat with existing storage; see setTargetTabId
   chrome.alarms.clear('attk-poll', () => {
     chrome.alarms.create('attk-poll', { periodInMinutes: 1 });
   });
 });
 
-chrome.contextMenus?.onClicked?.addListener((info, tab) => {
-  if (info.menuItemId === 'attk-copy-url' && tab?.url) {
-    try {
-      const u = new URL(tab.url);
-      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
-    } catch { return; }
-    chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (url) => navigator.clipboard.writeText(url), args: [tab.url] });
+ensureAlarm();
+
+// Hydrate targetTabId from session storage reliably
+async function getStoredTargetTabId() {
+  if (targetTabId !== null) return targetTabId;
+  try {
+    const data = await chrome.storage.session.get('attk_targetTabId');
+    if (data?.attk_targetTabId) {
+      targetTabId = data.attk_targetTabId;
+      return targetTabId;
+    }
+  } catch {}
+  return null;
+}
+
+// Automatically clear targetTabId if the locked tab is closed
+chrome.tabs.onRemoved.addListener((closedTabId) => {
+  if (targetTabId === closedTabId) {
+    setTargetTabId(null);
   }
 });
-
-let targetTabId = null;
-
-chrome.storage.session.get('attk_targetTabId').then(({ attk_targetTabId }) => {
-  if (attk_targetTabId) targetTabId = attk_targetTabId;
-}).catch(() => {});
 
 async function setTargetTabId(id) {
   targetTabId = id;
   try {
-    if (id) await chrome.storage.session.set({ attk_targetTabId: id });
-    else await chrome.storage.session.remove('attk_targetTabId');
-  } catch {}
+    if (id) {
+      await chrome.storage.session.set({ attk_targetTabId: id });
+    } else {
+      await chrome.storage.session.remove('attk_targetTabId');
+    }
+  } catch (e) {
+    console.debug('[Specter] storage update failed:', e.message);
+  }
 }
 
 function isAllowedUrl(url) {
@@ -52,17 +72,26 @@ function isRestrictedUrl(url) {
 }
 
 async function getTargetTab() {
-  if (targetTabId) {
+  const storedId = await getStoredTargetTabId();
+  if (storedId) {
     try {
-      const tab = await chrome.tabs.get(targetTabId);
+      const tab = await chrome.tabs.get(storedId);
       if (tab) return tab;
     } catch {
       await setTargetTabId(null);
     }
   }
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab) await setTargetTabId(tab.id);
-  return tab;
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (tab?.id) {
+    await setTargetTabId(tab.id);
+    return tab;
+  }
+  const [anyTab] = await chrome.tabs.query({ active: true });
+  if (anyTab?.id) {
+    await setTargetTabId(anyTab.id);
+    return anyTab;
+  }
+  return null;
 }
 
 async function getOrCreateAgentGroup(tabId) {
@@ -76,7 +105,7 @@ async function getOrCreateAgentGroup(tabId) {
       if (t.groupId && t.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
         try {
           const g = await chrome.tabGroups.get(t.groupId);
-          if (g.title === '👻 Specter' || g.title === '🤖 AI Worker') {
+          if (g.title === '👻 Specter') {
             existingGroupId = t.groupId;
             break;
           }
@@ -84,7 +113,9 @@ async function getOrCreateAgentGroup(tabId) {
       }
     }
     if (existingGroupId) {
-      await chrome.tabs.group({ tabIds: [tabId], groupId: existingGroupId });
+      if (targetTab.groupId !== existingGroupId) {
+        await chrome.tabs.group({ tabIds: [tabId], groupId: existingGroupId });
+      }
       return existingGroupId;
     } else {
       const newGroupId = await chrome.tabs.group({ tabIds: [tabId] });
@@ -92,7 +123,7 @@ async function getOrCreateAgentGroup(tabId) {
       return newGroupId;
     }
   } catch (e) {
-    console.debug('tab group merge error:', e.message);
+    console.debug('[Specter] tab group merge error:', e.message);
   }
 }
 
@@ -109,7 +140,7 @@ async function unmarkTabFromAgentGroup(tabId) {
       await chrome.tabs.ungroup(tabId);
     }
   } catch (e) {
-    console.debug('tab ungroup skipped:', e.message);
+    console.debug('[Specter] tab ungroup skipped:', e.message);
   }
 }
 
@@ -119,13 +150,24 @@ async function sendToActive(msg, timeoutMs = 30000) {
   if (isRestrictedUrl(tab.url)) {
     throw new Error(`Cannot execute tools on restricted browser page (${tab.url})`);
   }
-  try { await chrome.tabs.sendMessage(tab.id, { type: 'PING' }); } catch {
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: 'PING' });
+  } catch {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-    await new Promise(r => setTimeout(r, 200));
+    await sleep(200);
   }
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('content timeout')), timeoutMs);
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        reject(new Error('Content script communication timed out'));
+      }
+    }, timeoutMs);
+
     chrome.tabs.sendMessage(tab.id, msg, (res) => {
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timer);
       if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
       if (res?.error) return reject(new Error(res.error));
@@ -135,13 +177,14 @@ async function sendToActive(msg, timeoutMs = 30000) {
 }
 
 async function handleJob(job) {
-  const { id, action } = job;
+  const { id, action, source } = job;
   let result;
   try {
     switch (action) {
       case 'navigate': {
         if (!isAllowedUrl(job.url)) throw new Error('navigate only allows http/https URLs');
         const tab = await getTargetTab();
+        if (!tab?.id) throw new Error('No target tab found to navigate');
         await chrome.tabs.update(tab.id, { url: job.url });
         await markTabWithAgentGroup(tab.id);
         result = { ok: true, url: job.url, tabId: tab.id };
@@ -149,29 +192,40 @@ async function handleJob(job) {
       }
       case 'new_tab': {
         if (job.url && !isAllowedUrl(job.url)) throw new Error('new_tab only allows http/https URLs');
-        const [activeBefore] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const tab = await chrome.tabs.create({ url: job.url || 'about:blank', active: false });
+        const shouldBeActive = job.active === true;
+        const [activeBefore] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        const tab = await chrome.tabs.create({ url: job.url || 'about:blank', active: shouldBeActive });
         await setTargetTabId(tab.id);
         await markTabWithAgentGroup(tab.id);
-        if (activeBefore?.id && activeBefore.id !== tab.id) {
+        if (!shouldBeActive && activeBefore?.id && activeBefore.id !== tab.id) {
           try { await chrome.tabs.update(activeBefore.id, { active: true }); } catch {}
         }
-        result = { ok: true, tabId: tab.id, url: tab.url };
+        result = { ok: true, tabId: tab.id, url: tab.url || job.url || 'about:blank' };
         break;
       }
       case 'list_tabs': {
-        const tabs = await chrome.tabs.query({ currentWindow: true });
+        const tabs = await chrome.tabs.query({});
+        const currentId = await getStoredTargetTabId();
         result = {
           ok: true,
-          targetTabId,
-          tabs: tabs.map(t => ({ id: t.id, index: t.index, title: t.title, url: t.url, active: t.active, isTarget: t.id === targetTabId }))
+          targetTabId: currentId,
+          tabs: tabs.map(t => ({
+            id: t.id,
+            index: t.index,
+            windowId: t.windowId,
+            title: t.title,
+            url: t.url,
+            active: t.active,
+            isTarget: t.id === currentId
+          }))
         };
         break;
       }
       case 'switch_tab': {
         const tabId = typeof job.tabId === 'number' ? job.tabId : (job.tabId ? parseInt(job.tabId, 10) : null);
-        if (targetTabId && targetTabId !== tabId) {
-          await unmarkTabFromAgentGroup(targetTabId);
+        const prevTargetId = await getStoredTargetTabId();
+        if (prevTargetId && prevTargetId !== tabId) {
+          await unmarkTabFromAgentGroup(prevTargetId);
         }
         await setTargetTabId(tabId);
         if (tabId) {
@@ -184,41 +238,55 @@ async function handleJob(job) {
             const groups = await chrome.tabGroups.query({ title: '👻 Specter' });
             for (const g of groups) {
               const gTabs = await chrome.tabs.query({ groupId: g.id });
-              for (const t of gTabs) await chrome.tabs.ungroup(t.id);
-            }
-            // also clean legacy title
-            const legacy = await chrome.tabGroups.query({ title: '🤖 AI Worker' });
-            for (const g of legacy) {
-              const gTabs = await chrome.tabs.query({ groupId: g.id });
-              for (const t of gTabs) await chrome.tabs.ungroup(t.id);
+              const tabIds = gTabs.map(t => t.id);
+              if (tabIds.length > 0) {
+                await chrome.tabs.ungroup(tabIds);
+              }
             }
           } catch (e) {
-            console.debug('ungroup all skipped:', e.message);
+            console.debug('[Specter] ungroup all skipped:', e.message);
           }
         }
         result = { ok: true, targetTabId: tabId };
         break;
       }
       case 'close_tab': {
-        const tabId = job.tabId ? (typeof job.tabId === 'number' ? job.tabId : parseInt(job.tabId, 10)) : (await getTargetTab()).id;
-        if (targetTabId === tabId) await setTargetTabId(null);
+        const currentTab = await getTargetTab();
+        const tabId = job.tabId ? (typeof job.tabId === 'number' ? job.tabId : parseInt(job.tabId, 10)) : currentTab?.id;
+        if (!tabId) throw new Error('No target tab found to close');
+        const currentTarget = await getStoredTargetTabId();
+        if (currentTarget === tabId) await setTargetTabId(null);
         await chrome.tabs.remove(tabId);
         result = { ok: true, closedTabId: tabId };
         break;
       }
       case 'tab_eval': {
         const tab = await getTargetTab();
-        const [{ result: evalRes }] = await chrome.scripting.executeScript({
+        if (!tab?.id) throw new Error('No target tab found for eval');
+        if (isRestrictedUrl(tab.url)) throw new Error(`Cannot execute eval on restricted browser page (${tab.url})`);
+        const execResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           world: 'MAIN',
           func: (code) => {
             try {
               const fn = new Function('return (' + code + ')');
-              return { ok: true, value: fn() };
+              const val = fn();
+              try {
+                structuredClone(val);
+                return { ok: true, value: val };
+              } catch {
+                return { ok: true, value: String(val) };
+              }
             } catch (e) {
               try {
                 const fnBlock = new Function(code);
-                return { ok: true, value: fnBlock() };
+                const val = fnBlock();
+                try {
+                  structuredClone(val);
+                  return { ok: true, value: val };
+                } catch {
+                  return { ok: true, value: String(val) };
+                }
               } catch (e2) {
                 return { ok: false, error: e2.message };
               }
@@ -226,25 +294,27 @@ async function handleJob(job) {
           },
           args: [job.code]
         });
-        result = evalRes;
+        if (!execResults || !execResults[0]) {
+          throw new Error('Script execution returned no results');
+        }
+        result = execResults[0].result;
         break;
       }
       case 'click': result = await sendToActive({ type: 'CURSOR_CLICK', selector: job.selector, kind: job.kind || 'click', duration: job.duration || 520 }); break;
       case 'click_xy': result = await sendToActive({ type: 'CURSOR_CLICK_EL', x: job.x, y: job.y, duration: job.duration || 520 }); break;
-      case 'move': result = await sendToActive({ type: 'CURSOR_MOVE', selector: job.selector, x: job.x, y: job.y, duration: job.duration || 520 }); break;
       case 'type': result = await sendToActive({ type: 'CURSOR_TYPE', selector: job.selector, text: job.text }); break;
       case 'key': result = await sendToActive({ type: 'CURSOR_KEY', key: job.key, selector: job.selector }); break;
       case 'scroll': result = await sendToActive({ type: 'CURSOR_SCROLL', direction: job.direction || 'down', amount: job.amount ?? 400 }); break;
       case 'som': result = await sendToActive({ type: 'CURSOR_SOM_TOGGLE' }); break;
-      case 'hide_cursor': result = await sendToActive({ type: 'CURSOR_HIDE' }); break;
-      case 'get_text': result = await sendToActive({ type: 'GET_TEXT' }); break;
-      case 'get_html': result = await sendToActive({ type: 'GET_HTML' }); break;
+      case 'get_text': result = await sendToActive({ type: 'GET_TEXT', selector: job.selector }); break;
+      case 'get_html': result = await sendToActive({ type: 'GET_HTML', selector: job.selector }); break;
       case 'get_stats': result = await sendToActive({ type: 'GET_STATS' }); break;
       case 'query': result = await sendToActive({ type: 'CURSOR_QUERY', selector: job.selector }); break;
       case 'snapshot': result = await sendToActive({ type: 'CURSOR_SNAPSHOT', max: job.max ?? 80, inViewportOnly: job.inViewportOnly }); break;
       case 'scroll_into_view': result = await sendToActive({ type: 'CURSOR_SCROLL_INTO_VIEW', selector: job.selector, element: job.element }); break;
       case 'screenshot': {
         const tab = await getTargetTab();
+        if (!tab?.id) throw new Error('No target tab found for screenshot');
         if (isRestrictedUrl(tab.url)) throw new Error(`Cannot screenshot restricted page (${tab.url})`);
         const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: job.format || 'png' });
         result = { ok: true, dataUrl };
@@ -255,9 +325,19 @@ async function handleJob(job) {
       default: throw new Error('Unknown action: ' + action);
     }
   } catch (e) { result = { ok: false, error: e.message }; }
-  try {
-    await fetch(`${BRIDGE_URL}/result`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, result }) });
-  } catch {}
+
+  // Deliver result back to bridge if not an internal popup call
+  if (source !== 'popup' && source !== 'internal') {
+    try {
+      await fetch(`${BRIDGE_URL}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, result })
+      });
+    } catch (e) {
+      console.debug('[Specter] result delivery failed:', e.message);
+    }
+  }
   return result;
 }
 
@@ -276,7 +356,9 @@ async function pollOnce() {
       return;
     }
     const job = await res.json();
-    if (job?.action) handleJob(job).catch(e => console.error('[Specter] job error:', e.message));
+    if (job?.action) {
+      await handleJob(job);
+    }
   } catch {
     await sleep(3000);
   }
@@ -294,33 +376,20 @@ async function pollLoop() {
   }
 }
 
-// re-kick entry points
+// Re-kick entry points
 chrome.alarms?.onAlarm?.addListener(a => { if (a.name === 'attk-poll') pollLoop(); });
 chrome.runtime.onStartup?.addListener?.(() => setTimeout(pollLoop, 800));
 setTimeout(pollLoop, 1200);
 
-// Single merged message listener (was two — merged to avoid double-fire)
+// Merged message listener
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // re-kick poll on any message
   pollLoop();
   (async () => {
     try {
-      if (msg.type === 'CAPTURE_VISIBLE') {
-        if (isRestrictedUrl(sender?.tab?.url)) return sendResponse({ ok: false, error: 'Cannot capture restricted page' });
-        try {
-          const tab = sender?.tab || await getTargetTab();
-          const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: msg.format || 'png', quality: msg.quality ?? 92 });
-          return sendResponse({ ok: true, dataUrl });
-        } catch (e) {
-          return sendResponse({ ok: false, error: e.message });
-        }
-      }
       if (msg.type === 'MCP' || msg.mcp) {
         const cmd = msg.mcp || msg;
         const action = cmd.action || cmd.tool;
-        const job = { id: Date.now(), action, ...cmd };
-        const map = { click:'click', click_xy:'click_xy', move:'move', type:'type', key:'key', scroll:'scroll', som:'som', hide_cursor:'hide_cursor', get_text:'get_text', get_html:'get_html', get_stats:'get_stats', query:'query', snapshot:'snapshot', screenshot:'screenshot', navigate:'navigate' };
-        job.action = map[action] || action;
+        const job = { id: Date.now(), action, source: msg.source || cmd.source || 'internal', ...cmd };
         const res = await handleJob(job);
         return sendResponse({ ok: true, result: res });
       }

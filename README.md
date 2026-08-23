@@ -15,7 +15,7 @@ Ghost-cursor browser automation for AI agents. Chrome extension + MCP server tha
 ## How it works
 
 1. The Node bridge (`mcp-bridge/bridge.js`) exposes MCP stdio **and** an HTTP JSON API on `127.0.0.1:8765`.
-2. The extension's service worker long-polls the bridge, executes jobs in the active tab via `chrome.scripting`, and posts results back.
+2. The extension's service worker long-polls the bridge, executes jobs in the target tab via `chrome.scripting`, and posts results back.
 3. Agent-owned tabs are grouped under a green `[👻 Specter]` tab group so you always know what it's touching. You keep browsing — YouTube keeps playing.
 
 ## Tools
@@ -41,12 +41,13 @@ Selectors pierce open shadow roots; elements below the fold are auto-scrolled in
 
 ## Setup
 
-**Bridge:**
+**Bridge (Windows):**
 ```bash
 cd mcp-bridge
 npm install
 node bridge.js
 ```
+or double-click `start.bat`.
 
 **Extension:** load this folder as an unpacked extension at `chrome://extensions` (Developer mode → Load unpacked).
 
@@ -66,6 +67,7 @@ node bridge.js
 ```bash
 curl -X POST http://127.0.0.1:8765/tool \
   -H 'Content-Type: application/json' \
+  -H "X-Specter-Token: $(cat mcp-bridge/.specter-token)" \
   -d '{"tool":"click","args":{"selector":"button.submit"}}'
 ```
 
@@ -74,3 +76,5 @@ curl -X POST http://127.0.0.1:8765/tool \
 - Target tab is persisted across service-worker suspensions (`chrome.storage.session`).
 - New tabs open silently in the Specter group — your focused tab never changes.
 - Restricted pages (`chrome://`, `edge://`) are rejected cleanly.
+- Content scripts inject on demand (PING-fail fallback) instead of every page you browse.
+- `/tool` requires the `X-Specter-Token` header once `mcp-bridge/.specter-token` exists (it is auto-generated on first run).
