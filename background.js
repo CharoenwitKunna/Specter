@@ -153,7 +153,10 @@ async function sendToActive(msg, timeoutMs = 30000) {
   try {
     await chrome.tabs.sendMessage(tab.id, { type: 'PING' });
   } catch {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      files: ['content.js']
+    });
     await sleep(200);
   }
   return new Promise((resolve, reject) => {

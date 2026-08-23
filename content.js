@@ -72,6 +72,25 @@
         box-shadow: 0 0 0 6px rgba(16,185,129,.22) !important;
         transition: outline .15s;
       }
+      .__attk-input-focused {
+        outline: 2px solid #10b981 !important;
+        outline-offset: 2px !important;
+        box-shadow: 0 0 0 4px rgba(16,185,129,.35), 0 0 12px rgba(16,185,129,.5) !important;
+        transition: box-shadow .2s ease, outline .2s ease !important;
+      }
+      .__attk-input-tag {
+        position: fixed;
+        background: #10b981;
+        color: #042316;
+        font: 700 10px/14px ui-monospace, SFMono-Regular, Consolas, sans-serif;
+        padding: 2px 6px;
+        border-radius: 4px;
+        pointer-events: none !important;
+        z-index: 2147483647;
+        box-shadow: 0 2px 8px rgba(0,0,0,.4);
+        opacity: 1;
+        transition: opacity 200ms ease;
+      }
       .__attk-som {
         position: fixed;
         min-width: 20px;
@@ -436,6 +455,37 @@
     }
   }
 
+  let activeInputTagEl = null;
+
+  function showActiveInputIndicator(el) {
+    removeActiveInputIndicator();
+    if (!el || isInternalNode(el)) return;
+    try {
+      el.classList.add('__attk-input-focused');
+      const r = el.getBoundingClientRect();
+      const tag = document.createElement('div');
+      tag.className = '__attk-input-tag';
+      tag.setAttribute('data-attk-internal', 'true');
+      const label = el.getAttribute('placeholder') || el.name || el.id || el.tagName.toLowerCase();
+      tag.textContent = '✏️ ' + (label.length > 25 ? label.slice(0, 22) + '...' : label);
+      tag.style.left = Math.max(4, r.left) + 'px';
+      tag.style.top = Math.max(2, r.top - 20) + 'px';
+      (document.body || document.documentElement).appendChild(tag);
+      activeInputTagEl = { el, tag };
+    } catch {}
+  }
+
+  function removeActiveInputIndicator(delay = 1400) {
+    if (activeInputTagEl) {
+      const { el, tag } = activeInputTagEl;
+      activeInputTagEl = null;
+      setTimeout(() => {
+        try { el?.classList.remove('__attk-input-focused'); } catch {}
+        try { tag?.remove(); } catch {}
+      }, delay);
+    }
+  }
+
   async function doType(selector, text, opts = {}) {
     let el = typeof selector === 'string' ? queryDeep(selector) : selector;
     if (!el) throw new Error('Element not found: ' + selector);
@@ -445,6 +495,7 @@
     const { x, y } = getCenter(el);
 
     showHighlight(el);
+    showActiveInputIndicator(el);
     try {
       await glideTo(x, y, 250);
       const target = resolveTargetAt(x, y, el);
@@ -716,7 +767,7 @@
     }
   }
 
-  // --- shadow DOM tree walker ---
+  // --- shadow DOM & iframe tree walker ---
   function* walkRoots(root = document) {
     if (!root) return;
     yield root;
@@ -731,6 +782,12 @@
       while ((node = walker.nextNode())) {
         if (node.shadowRoot) {
           yield* walkRoots(node.shadowRoot);
+        }
+        if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
+          try {
+            const doc = node.contentDocument || node.contentWindow?.document;
+            if (doc) yield* walkRoots(doc);
+          } catch {}
         }
       }
     } catch {}
