@@ -4,7 +4,10 @@ let currentTargetId = null;
 async function updateUI() {
   // Check Bridge status
   try {
-    const res = await fetch('http://127.0.0.1:8765/health', { signal: AbortSignal.timeout(1000) });
+    const controller = new AbortController();
+    const _to = setTimeout(() => controller.abort(), 1000);
+    let res;
+    try { res = await fetch('http://127.0.0.1:8765/health', { signal: controller.signal }); } finally { clearTimeout(_to); }
     const data = await res.json();
     const badge = document.getElementById('bridge-badge');
     if (data.ok) {
@@ -65,6 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentTargetId) {
       const idToUnlock = currentTargetId;
       chrome.runtime.sendMessage({ type: 'MCP', mcp: { action: 'switch_tab', tabId: null } }, async () => {
+        if (chrome.runtime.lastError) { setStatus('Error: ' + chrome.runtime.lastError.message); return; }
         try { await chrome.tabs.ungroup(idToUnlock); } catch {}
         setStatus('Unlocked tab & removed group');
         currentTargetId = null;
@@ -74,6 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return;
       chrome.runtime.sendMessage({ type: 'MCP', mcp: { action: 'switch_tab', tabId: tab.id, focusWindow: false } }, () => {
+        if (chrome.runtime.lastError) { setStatus('Error: ' + chrome.runtime.lastError.message); return; }
         setStatus('Locked tab & added to AI Worker!');
         currentTargetId = tab.id;
         updateUI();
@@ -84,6 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Create New Dedicated Worker Tab
   document.getElementById('btn-create-worker').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'MCP', mcp: { action: 'new_tab', url: 'https://google.com', active: false } }, () => {
+      if (chrome.runtime.lastError) { setStatus('Error: ' + chrome.runtime.lastError.message); return; }
       setStatus('Created worker tab!');
       updateUI();
     });
@@ -92,6 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Focus Worker Tab
   document.getElementById('btn-highlight-target').addEventListener('click', async () => {
     chrome.runtime.sendMessage({ type: 'MCP', mcp: { action: 'list_tabs' } }, (res) => {
+      if (chrome.runtime.lastError) { setStatus('Error: ' + chrome.runtime.lastError.message); return; }
       const targetId = res?.result?.targetTabId;
       if (targetId) {
         chrome.tabs.update(targetId, { active: true });
@@ -105,16 +112,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // Toggle Numbers (SOM)
   document.getElementById('btn-toggle-som').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'MCP', mcp: { action: 'som' } }, () => {
+      if (chrome.runtime.lastError) { setStatus('Error: ' + chrome.runtime.lastError.message); return; }
       setStatus('Toggled SOM numbers');
     });
   });
 
   // Copy Target URL
-  document.getElementById('btn-copy-url').addEventListener('click', () => {
+  document.getElementById('btn-copy-url').addEventListener('click', async () => {
     const url = document.getElementById('target-url').textContent;
     if (url && url !== '—' && !url.startsWith('Current:')) {
-      navigator.clipboard.writeText(url);
-      setStatus('Copied URL');
+      try { await navigator.clipboard.writeText(url); setStatus('Copied URL'); } catch (e) { setStatus('Copy failed: ' + (e?.message || e)); }
     }
   });
 });

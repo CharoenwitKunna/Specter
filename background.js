@@ -1,20 +1,29 @@
 // background.js — service worker + MCP bridge poll loop
 const BRIDGE_URL = 'http://127.0.0.1:8765';
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('[Active Tab Toolkit] installed');
-  try { chrome.contextMenus.create({ id: 'attk-copy-url', title: 'Copy page URL (Active Tab Toolkit)', contexts: ['page'] }); } catch {}
+  console.log('[Specter] installed');
+  try { chrome.contextMenus.create({ id: 'attk-copy-url', title: 'Copy page URL (Specter)', contexts: ['page'] }); } catch {}
+  // ATTK_ keys kept for backwards compat with existing storage; see setTargetTabId
+  chrome.alarms.clear('attk-poll', () => {
+    chrome.alarms.create('attk-poll', { periodInMinutes: 1 });
+  });
 });
 
 chrome.contextMenus?.onClicked?.addListener((info, tab) => {
   if (info.menuItemId === 'attk-copy-url' && tab?.url) {
+    try {
+      const u = new URL(tab.url);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+    } catch { return; }
     chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (url) => navigator.clipboard.writeText(url), args: [tab.url] });
   }
 });
 
-let targetTabId = null; // Stays focused on the assigned tab even when user switches to YouTube!
+let targetTabId = null;
 
-// Load stored targetTabId on service worker start
 chrome.storage.session.get('attk_targetTabId').then(({ attk_targetTabId }) => {
   if (attk_targetTabId) targetTabId = attk_targetTabId;
 }).catch(() => {});
@@ -25,6 +34,21 @@ async function setTargetTabId(id) {
     if (id) await chrome.storage.session.set({ attk_targetTabId: id });
     else await chrome.storage.session.remove('attk_targetTabId');
   } catch {}
+}
+
+function isAllowedUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch { return false; }
+}
+
+function isRestrictedUrl(url) {
+  if (!url) return false;
+  return url.startsWith('chrome://') || url.startsWith('edge://') || url.startsWith('chrome-extension://')
+    || url.startsWith('about:') || url.startsWith('view-source:') || url.startsWith('chrome-untrusted://')
+    || url.startsWith('file://') || url.startsWith('data:');
 }
 
 async function getTargetTab() {
@@ -46,11 +70,8 @@ async function getOrCreateAgentGroup(tabId) {
   try {
     const targetTab = await chrome.tabs.get(tabId);
     const windowId = targetTab.windowId;
-
-    // 1. Find ANY tab in this window that already belongs to a group titled '🤖 AI Worker'
     const windowTabs = await chrome.tabs.query({ windowId });
     let existingGroupId = null;
-
     for (const t of windowTabs) {
       if (t.groupId && t.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
         try {
@@ -62,13 +83,10 @@ async function getOrCreateAgentGroup(tabId) {
         } catch {}
       }
     }
-
     if (existingGroupId) {
-      // Join the existing group directly
       await chrome.tabs.group({ tabIds: [tabId], groupId: existingGroupId });
       return existingGroupId;
     } else {
-      // Create a brand new group only if none exists
       const newGroupId = await chrome.tabs.group({ tabIds: [tabId] });
       await chrome.tabGroups.update(newGroupId, { title: '👻 Specter', color: 'green' });
       return newGroupId;
@@ -98,7 +116,7 @@ async function unmarkTabFromAgentGroup(tabId) {
 async function sendToActive(msg, timeoutMs = 30000) {
   const tab = await getTargetTab();
   if (!tab?.id) throw new Error('No target tab found');
-  if (tab.url?.startsWith('chrome://') || tab.url?.startsWith('edge://') || tab.url?.startsWith('chrome-extension://')) {
+  if (isRestrictedUrl(tab.url)) {
     throw new Error(`Cannot execute tools on restricted browser page (${tab.url})`);
   }
   try { await chrome.tabs.sendMessage(tab.id, { type: 'PING' }); } catch {
@@ -122,6 +140,7 @@ async function handleJob(job) {
   try {
     switch (action) {
       case 'navigate': {
+        if (!isAllowedUrl(job.url)) throw new Error('navigate only allows http/https URLs');
         const tab = await getTargetTab();
         await chrome.tabs.update(tab.id, { url: job.url });
         await markTabWithAgentGroup(tab.id);
@@ -129,11 +148,11 @@ async function handleJob(job) {
         break;
       }
       case 'new_tab': {
+        if (job.url && !isAllowedUrl(job.url)) throw new Error('new_tab only allows http/https URLs');
         const [activeBefore] = await chrome.tabs.query({ active: true, currentWindow: true });
         const tab = await chrome.tabs.create({ url: job.url || 'about:blank', active: false });
         await setTargetTabId(tab.id);
         await markTabWithAgentGroup(tab.id);
-        // Force focus to remain on the user's active tab (e.g. YouTube) so Chrome never shifts focus
         if (activeBefore?.id && activeBefore.id !== tab.id) {
           try { await chrome.tabs.update(activeBefore.id, { active: true }); } catch {}
         }
@@ -161,10 +180,15 @@ async function handleJob(job) {
             await chrome.tabs.update(tabId, { active: true });
           }
         } else {
-          // If unsetting target, ungroup all tabs in the AI group
           try {
-            const groups = await chrome.tabGroups.query({ title: '🤖 AI Worker' });
+            const groups = await chrome.tabGroups.query({ title: '👻 Specter' });
             for (const g of groups) {
+              const gTabs = await chrome.tabs.query({ groupId: g.id });
+              for (const t of gTabs) await chrome.tabs.ungroup(t.id);
+            }
+            // also clean legacy title
+            const legacy = await chrome.tabGroups.query({ title: '🤖 AI Worker' });
+            for (const g of legacy) {
               const gTabs = await chrome.tabs.query({ groupId: g.id });
               for (const t of gTabs) await chrome.tabs.ungroup(t.id);
             }
@@ -220,8 +244,10 @@ async function handleJob(job) {
       case 'snapshot': result = await sendToActive({ type: 'CURSOR_SNAPSHOT', max: job.max ?? 80, inViewportOnly: job.inViewportOnly }); break;
       case 'scroll_into_view': result = await sendToActive({ type: 'CURSOR_SCROLL_INTO_VIEW', selector: job.selector, element: job.element }); break;
       case 'screenshot': {
-        const dataUrl = await chrome.tabs.captureVisibleTab({ format: job.format || 'png' });
-        result = { ok: true, dataUrl }; // full data URL — MCP turns it into an image block
+        const tab = await getTargetTab();
+        if (isRestrictedUrl(tab.url)) throw new Error(`Cannot screenshot restricted page (${tab.url})`);
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: job.format || 'png' });
+        result = { ok: true, dataUrl };
         break;
       }
       case 'click_id': result = await sendToActive({ type: 'CURSOR_CLICK_ID', element: job.element, kind: job.kind || 'click' }); break;
@@ -229,7 +255,6 @@ async function handleJob(job) {
       default: throw new Error('Unknown action: ' + action);
     }
   } catch (e) { result = { ok: false, error: e.message }; }
-  // deliver result back to bridge
   try {
     await fetch(`${BRIDGE_URL}/result`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, result }) });
   } catch {}
@@ -237,54 +262,63 @@ async function handleJob(job) {
 }
 
 // --- MV3-safe poll loop ---
-// Service workers get killed after ~30s idle, which would silently kill AI control.
-// Fix: (1) one in-flight long-poll fetch keeps the worker alive while waiting,
-//      (2) chrome.alarms re-kicks the loop if the worker was suspended,
-//      (3) any incoming message also re-kicks it.
 let polling = false;
 
 async function pollOnce() {
   try {
-    const res = await fetch(`${BRIDGE_URL}/poll`);
-    if (res.status === 200) {
-      const job = await res.json();
-      if (job?.action) handleJob(job); // async — don't block next poll
+    const res = await fetch(`${BRIDGE_URL}/poll`, { signal: AbortSignal.timeout(26000) });
+    if (res.status === 204) {
+      await sleep(200);
+      return;
     }
-    // 204 = no job; loop continues immediately
+    if (res.status !== 200) {
+      await sleep(3000);
+      return;
+    }
+    const job = await res.json();
+    if (job?.action) handleJob(job).catch(e => console.error('[Specter] job error:', e.message));
   } catch {
-    // bridge not running — back off
-    await new Promise(r => setTimeout(r, 3000));
+    await sleep(3000);
   }
 }
 
 async function pollLoop() {
   if (polling) return;
   polling = true;
-  while (true) {
-    try { await pollOnce(); } catch {}
+  try {
+    while (polling) {
+      await pollOnce();
+    }
+  } finally {
+    polling = false;
   }
 }
+
 // re-kick entry points
-chrome.alarms?.create('attk-poll', { periodInMinutes: 0.5 });
 chrome.alarms?.onAlarm?.addListener(a => { if (a.name === 'attk-poll') pollLoop(); });
 chrome.runtime.onStartup?.addListener?.(() => setTimeout(pollLoop, 800));
 setTimeout(pollLoop, 1200);
-// also re-kick whenever the popup or anything messages us
-chrome.runtime.onMessage.addListener(() => { pollLoop(); });
 
-// also handle direct messages (popup + external)
+// Single merged message listener (was two — merged to avoid double-fire)
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // re-kick poll on any message
+  pollLoop();
   (async () => {
     try {
       if (msg.type === 'CAPTURE_VISIBLE') {
-        const dataUrl = await chrome.tabs.captureVisibleTab({ format: msg.format || 'png', quality: msg.quality ?? 92 });
-        return sendResponse({ ok: true, dataUrl });
+        if (isRestrictedUrl(sender?.tab?.url)) return sendResponse({ ok: false, error: 'Cannot capture restricted page' });
+        try {
+          const tab = sender?.tab || await getTargetTab();
+          const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: msg.format || 'png', quality: msg.quality ?? 92 });
+          return sendResponse({ ok: true, dataUrl });
+        } catch (e) {
+          return sendResponse({ ok: false, error: e.message });
+        }
       }
       if (msg.type === 'MCP' || msg.mcp) {
         const cmd = msg.mcp || msg;
         const action = cmd.action || cmd.tool;
         const job = { id: Date.now(), action, ...cmd };
-        // normalize
         const map = { click:'click', click_xy:'click_xy', move:'move', type:'type', key:'key', scroll:'scroll', som:'som', hide_cursor:'hide_cursor', get_text:'get_text', get_html:'get_html', get_stats:'get_stats', query:'query', snapshot:'snapshot', screenshot:'screenshot', navigate:'navigate' };
         job.action = map[action] || action;
         const res = await handleJob(job);

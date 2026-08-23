@@ -30,11 +30,12 @@ Ghost-cursor browser automation for AI agents. Chrome extension + MCP server tha
 | `tab_eval` | Run JavaScript in the page, get the result back |
 | `tab_get_text` / `tab_get_html` / `tab_stats` | Page content extraction |
 | `tab_screenshot` | Visible-tab capture (MCP image block for vision models) |
+| `tab_scroll_into_view` | Scroll element into view by selector or snapshot id |
 | `click` | By selector, snapshot id, or x/y — right/double supported |
 | `type` / `key` | Framework-safe typing (React/Vue setter bypass), key events |
 | `scroll` | Pixel scroll or scroll-into-view |
 | `drag` | Press → eased glide → release, selector or coordinates |
-| `wait` | Sleep between actions |
+| `wait` | Sleep between actions (server-side `ms` delay; no tab round-trip — port `ATTK_PORT` on bridge, default 8765). MCP/HTTP `wait` avoids polling timeout. |
 
 Selectors pierce open shadow roots; elements below the fold are auto-scrolled into view before interaction.
 
@@ -55,7 +56,7 @@ node bridge.js
   "mcpServers": {
     "specter": {
       "command": "node",
-      "args": ["C:/path/to/BrowerExtension/mcp-bridge/bridge.js"]
+      "args": ["C:/path/to/Specter/mcp-bridge/bridge.js"]  // adjust if your folder is still named BrowerExtension
     }
   }
 }

@@ -41,6 +41,7 @@ header {
 
 .header-info {
   flex: 1;
+  min-width: 0;
 }
 
 h1 {
@@ -72,6 +73,7 @@ h1 {
 }
 
 .card {
+  overflow: hidden;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -171,6 +173,9 @@ h1 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+}
+.btn-grid > :last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 
 footer {

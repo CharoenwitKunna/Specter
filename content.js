@@ -6,6 +6,7 @@
   let cursorEl = null, styleEl = null, pickerActive = false, somActive = false;
   let somEls = [], highlightEl = null, tooltipEl = null;
   let lastX = 0, lastY = 0;
+  let somTimer = null;
 
   // --- styles ---
   function ensureStyle() {
@@ -51,6 +52,32 @@
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+  function waitForScrollEnd(el, timeout = 900) {
+    return new Promise(resolve => {
+      let lastRect = el ? el.getBoundingClientRect() : null;
+      let stable = 0;
+      let done = false;
+      let timer = null;
+      const finish = () => { if (done) return; done = true; window.removeEventListener('scrollend', finish); if (timer) clearTimeout(timer); resolve(); };
+      window.addEventListener('scrollend', finish, { once: true });
+      timer = setTimeout(finish, timeout);
+      let start = Date.now();
+      const tick = () => {
+        if (done) return;
+        if (Date.now() - start > timeout) return finish();
+        if (el) {
+          const r = el.getBoundingClientRect();
+          if (lastRect && r.top === lastRect.top && r.left === lastRect.left && r.width === lastRect.width && r.height === lastRect.height) {
+            stable++;
+            if (stable >= 3) return finish();
+          } else { stable = 0; lastRect = r; }
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
   function getCenter(el) {
     const r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, rect: r };
@@ -84,8 +111,22 @@
   }
 
   function fireMouse(el, type, x, y, btn = 0) {
-    const ev = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: btn, buttons: type === 'mousedown' ? 1 : 0 });
+    const buttons = type === 'mousedown' ? (btn === 2 ? 2 : 1) : type === 'mousemove' ? 1 : 0;
+    const pointerMap = { mousedown: 'pointerdown', mouseup: 'pointerup', mousemove: 'pointermove', mouseover: 'pointerover' };
+    if (pointerMap[type]) {
+      try {
+        const pe = new PointerEvent(pointerMap[type], { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: btn, buttons, composed: true, pointerType: 'mouse', isPrimary: true, pointerId: 1 });
+        el.dispatchEvent(pe);
+      } catch {}
+    }
+    const ev = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: btn, buttons, composed: true });
     el.dispatchEvent(ev);
+    if (type === 'click' || type === 'dblclick' || type === 'contextmenu') {
+      try {
+        const pe2 = new PointerEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: btn, buttons, composed: true, pointerType: 'mouse', isPrimary: true, pointerId: 1 });
+        el.dispatchEvent(pe2);
+      } catch {}
+    }
   }
 
   async function doClick(selectorOrEl, opts = {}) {
@@ -94,17 +135,18 @@
     if (!el) throw new Error('Element not found: ' + selectorOrEl);
     if (scroll) {
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
-      await sleep(350);
+      await waitForScrollEnd(el);
     }
     // Re-verify position after scroll
     let center = getCenter(el);
     if (center.rect.top < 0 || center.rect.bottom > innerHeight || center.rect.left < 0 || center.rect.right > innerWidth) {
       el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-      await sleep(100);
+      await waitForScrollEnd(el);
       center = getCenter(el);
     }
     showHighlight(el);
-    await glideTo(center.x, center.y, duration);
+    try {
+      await glideTo(center.x, center.y, duration);
     const c = ensureCursor();
     c.classList.add('clicking');
     ripple(center.x, center.y);
@@ -137,16 +179,17 @@
         // el.click() handled by event cascade
       }
     }
-    await sleep(120);
-    c.classList.remove('clicking');
-    await sleep(180);
-    clearHighlight();
-    return { ok: true, x: center.x, y: center.y, tag: el.tagName, text: (el.innerText || el.value || '').slice(0, 80) };
+      await sleep(120);
+      c.classList.remove('clicking');
+      await sleep(180);
+      return { ok: true, x: center.x, y: center.y, tag: el.tagName, text: (el.innerText || el.value || '').slice(0, 80) };
+    } finally {
+      clearHighlight();
+    }
   }
 
   function setNativeValue(element, value) {
-    const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value');
     if (descriptor && descriptor.set) {
       descriptor.set.call(element, value);
     } else {
@@ -155,34 +198,50 @@
   }
 
   async function doType(selector, text) {
-    let el = document.querySelector(selector);
+    let el = queryDeep(selector);
     if (!el) throw new Error('Element not found: ' + selector);
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    await sleep(150);
+    await waitForScrollEnd(el);
     const { x, y } = getCenter(el);
     showHighlight(el);
-    await glideTo(x, y, 250);
-    const target = document.elementFromPoint(x, y) || el;
-    fireMouse(target, 'mousedown', x, y);
-    fireMouse(target, 'mouseup', x, y);
-    fireMouse(target, 'click', x, y);
-    try { el.focus(); } catch {}
-    await sleep(50);
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) {
-      if (el.isContentEditable) {
-        el.textContent = text;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-      } else {
-        // React/Vue setter bypass + native event cascade
+    try {
+      await glideTo(x, y, 250);
+      const target = document.elementFromPoint(x, y) || el;
+      fireMouse(target, 'mousedown', x, y);
+      fireMouse(target, 'mouseup', x, y);
+      fireMouse(target, 'click', x, y);
+      try { el.focus(); } catch {}
+      await sleep(50);
+      if (el.tagName === 'SELECT') {
+        el.value = text;
+        el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      } else if (el.isContentEditable) {
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: text }));
+        range.deleteContents();
+        range.insertNode(document.createTextNode(text));
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }));
+      } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
         setNativeValue(el, text);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: text }));
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }));
+        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      } else {
+        throw new Error('Element is not typable');
       }
-    } else {
-      throw new Error('Element is not typable');
+      return { ok: true, textLength: text.length };
+    } finally {
+      clearHighlight();
     }
-    clearHighlight();
-    return { ok: true, textLength: text.length };
   }
 
   function cssPath(el) {
@@ -191,10 +250,12 @@
     let path = '';
     let cur = el;
     let depth = 0;
-    while (cur && cur !== document.body && depth < 5) {
+    while (cur && cur !== document.body && depth < 8) {
       let sel = cur.tagName.toLowerCase();
-      if (cur.className && typeof cur.className === 'string') {
-        const cls = cur.className.trim().split(/\s+/).slice(0,2).map(c=>'.'+CSS.escape(c)).join('');
+      const classAttr = cur.getAttribute ? cur.getAttribute('class') : null;
+      const classStr = (classAttr && typeof classAttr === 'string' && classAttr.trim()) ? classAttr : (typeof cur.className === 'string' ? cur.className : '');
+      if (classStr) {
+        const cls = classStr.trim().split(/\s+/).slice(0,2).map(c=>'.'+CSS.escape(c)).join('');
         if (cls) sel += cls;
       }
       const parent = cur.parentElement;
@@ -206,6 +267,7 @@
       cur = parent;
       depth++;
     }
+    try { if (path && document.querySelectorAll(path).length !== 1) { /* not unique, keep as-is */ } } catch {}
     return path;
   }
 
@@ -279,10 +341,11 @@
   // --- SOM overlay (numbered interactables) ---
   function toggleSOM() {
     if (somActive) {
+      if (somTimer) { clearTimeout(somTimer); somTimer = null; }
       somEls.forEach(n => n.remove()); somEls = []; somActive = false; return { ok: true, active: false };
     }
     const sels = 'a[href], button, [role="button"], input, textarea, select, [onclick], [tabindex]:not([tabindex="-1"])';
-    const els = [...document.querySelectorAll(sels)].filter(el => {
+    const els = queryAllDeep(document, sels).filter(el => {
       const r = el.getBoundingClientRect();
       return r.width > 4 && r.height > 4 && r.top >= -200 && r.top < innerHeight + 200 && getComputedStyle(el).visibility !== 'hidden';
     }).slice(0, 60);
@@ -291,10 +354,8 @@
       const n = document.createElement('div');
       n.className = '__attk-som';
       n.textContent = i + 1;
-      n.style.left = (r.left + Math.min(18, r.width/2)) + 'px';
-      n.style.top = (r.top + Math.min(18, r.height/2)) + window.scrollY + 'px';
-      // adjust for fixed vs absolute: use fixed
       n.style.position = 'fixed';
+      n.style.left = (r.left + Math.min(18, r.width/2)) + 'px';
       n.style.top = (r.top + 8) + 'px';
       n.dataset.selector = cssPath(el);
       n.title = cssPath(el);
@@ -302,8 +363,8 @@
       return n;
     });
     somActive = true;
-    // auto-hide after 8s
-    setTimeout(() => { if (somActive) { somEls.forEach(n=>n.remove()); somEls=[]; somActive=false; } }, 8000);
+    if (somTimer) clearTimeout(somTimer);
+    somTimer = setTimeout(() => { if (somActive) { somEls.forEach(n=>n.remove()); somEls=[]; somActive=false; somTimer=null; } }, 8000);
     return { ok: true, active: true, count: els.length };
   }
 
@@ -322,7 +383,7 @@
     return { ok: true, scrollY: window.scrollY, scrollX: window.scrollX };
   }
   function doKey(key, selector) {
-    let el = selector ? document.querySelector(selector) : document.activeElement;
+    let el = selector ? queryDeep(selector) : document.activeElement;
     if (!el || el === document.body) el = document.body;
     try { el.focus?.(); } catch {}
     const ev = (t) => new KeyboardEvent(t, { key, code: key, bubbles: true, cancelable: true });
@@ -332,20 +393,24 @@
   }
   function doQuery(sel) {
     try {
-      const els = [...document.querySelectorAll(sel)];
+      const els = queryAllDeep(document, sel);
       if (!els.length) return { ok: true, count: 0, items: [] };
       return { ok: true, count: els.length, items: els.slice(0, 20).map((el,i)=>({ index:i, tag:el.tagName.toLowerCase(), text:(el.innerText||el.value||'').slice(0,120), rect:el.getBoundingClientRect(), selector: cssPath(el) })) };
     } catch (e) { return { error: e.message }; }
   }
+  function* walkRoots(root) {
+    yield root;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.shadowRoot) yield* walkRoots(node.shadowRoot);
+    }
+  }
+
   function queryAllDeep(root, selector) {
-    let results = [...root.querySelectorAll(selector)];
-    const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-    let node = treeWalker.nextNode();
-    while (node) {
-      if (node.shadowRoot) {
-        results = results.concat(queryAllDeep(node.shadowRoot, selector));
-      }
-      node = treeWalker.nextNode();
+    const results = [];
+    for (const r of walkRoots(root)) {
+      try { results.push(...r.querySelectorAll(selector)); } catch {}
     }
     return results;
   }
@@ -355,24 +420,16 @@
       const parts = selector.split('>>>').map(s => s.trim());
       let cur = document;
       for (let i = 0; i < parts.length; i++) {
-        const el = cur.querySelector(parts[i]);
-        if (!el) return null;
-        if (i === parts.length - 1) return el;
-        cur = el.shadowRoot || el;
+        let found = null;
+        for (const r of walkRoots(cur)) { try { found = r.querySelector(parts[i]); } catch {} if (found) break; }
+        if (!found) return null;
+        if (i === parts.length - 1) return found;
+        cur = found.shadowRoot || found;
       }
       return null;
     }
-    let el = document.querySelector(selector);
-    if (el) return el;
-    // Fallback: search open shadow roots
-    const treeWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-    let node = treeWalker.nextNode();
-    while (node) {
-      if (node.shadowRoot) {
-        el = node.shadowRoot.querySelector(selector);
-        if (el) return el;
-      }
-      node = treeWalker.nextNode();
+    for (const r of walkRoots(document)) {
+      try { const el = r.querySelector(selector); if (el) return el; } catch {}
     }
     return null;
   }
@@ -434,15 +491,16 @@
       el = selector ? queryDeep(selector) : null;
       if (!el) { map.delete(numId); throw new Error('Element ' + numId + ' left the page and its selector no longer matches'); }
     }
-    return doClick(el, { clickKind: kind, duration: 520 });
+    showHighlight(el);
+    try { return await doClick(el, { clickKind: kind, duration: 520 }); } finally { clearHighlight(); }
   }
 
   async function resolvePoint(src) {
     if (src.from_selector) {
-      const el = document.querySelector(src.from_selector);
+      const el = queryDeep(src.from_selector);
       if (!el) throw new Error('Not found: ' + src.from_selector);
       el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      await sleep(320);
+      await waitForScrollEnd(el);
       const c = getCenter(el);
       return c;
     }
@@ -454,10 +512,10 @@
     const from = await resolvePoint(msg);
     let toX = msg.to_x, toY = msg.to_y;
     if (msg.to_selector) {
-      const el2 = document.querySelector(msg.to_selector);
+      const el2 = queryDeep(msg.to_selector);
       if (!el2) throw new Error('Not found: ' + msg.to_selector);
       el2.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      await sleep(320);
+      await waitForScrollEnd(el2);
       const c2 = getCenter(el2);
       toX = c2.x; toY = c2.y;
     } else if (typeof toX !== 'number' || typeof toY !== 'number') {
@@ -465,7 +523,8 @@
     }
     ensureCursor();
     showHighlight(document.elementFromPoint(from.x, from.y));
-    await glideTo(from.x, from.y, 420);
+    try {
+      await glideTo(from.x, from.y, 420);
     const target0 = document.elementFromPoint(from.x, from.y) || document.body;
     fireMouse(target0, 'mouseover', from.x, from.y);
     fireMouse(target0, 'mousemove', from.x, from.y);
@@ -485,11 +544,13 @@
       await sleep(dur / steps);
     }
     const target1 = document.elementFromPoint(toX, toY) || document.body;
-    fireMouse(target1, 'mouseup', toX, toY);
-    ripple(toX, toY);
-    ensureCursor().classList.remove('clicking');
-    clearHighlight();
-    return { ok: true, from, to: { x: toX, y: toY } };
+      fireMouse(target1, 'mouseup', toX, toY);
+      ripple(toX, toY);
+      ensureCursor().classList.remove('clicking');
+      return { ok: true, from, to: { x: toX, y: toY } };
+    } finally {
+      clearHighlight();
+    }
   }
 
   // --- message router ---
@@ -520,7 +581,7 @@
           if (msg.selector) {
             const el = document.querySelector(msg.selector);
             if (!el) throw new Error('Not found: '+msg.selector);
-            el.scrollIntoView({block:'center',behavior:'smooth'}); await sleep(300);
+            el.scrollIntoView({block:'center',behavior:'smooth'}); await waitForScrollEnd(el);
             const c = getCenter(el); x=c.x; y=c.y; showHighlight(el); await glideTo(x,y,msg.duration||520); await sleep(200); clearHighlight();
           } else { x=msg.x; y=msg.y; await glideTo(x,y,msg.duration||520); }
           return sendResponse({ ok:true, x, y });
@@ -538,7 +599,7 @@
           if (!el && msg.selector) el = queryDeep(msg.selector);
           if (!el) throw new Error('Element not found');
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
-          await sleep(300);
+          await waitForScrollEnd(el);
           return sendResponse({ ok: true, scrollY: window.scrollY, scrollX: window.scrollX, rect: el.getBoundingClientRect() });
         }
         if (msg.type === 'CURSOR_CLICK_ID') { const r = await doClickId(msg.element, msg.kind || 'click'); return sendResponse(r); }
