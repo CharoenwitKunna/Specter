@@ -67,7 +67,6 @@ or double-click `start.bat`.
 ```bash
 curl -X POST http://127.0.0.1:8765/tool \
   -H 'Content-Type: application/json' \
-  -H "X-Specter-Token: $(cat mcp-bridge/.specter-token)" \
   -d '{"tool":"click","args":{"selector":"button.submit"}}'
 ```
 
@@ -77,4 +76,3 @@ curl -X POST http://127.0.0.1:8765/tool \
 - New tabs open silently in the Specter group — your focused tab never changes.
 - Restricted pages (`chrome://`, `edge://`) are rejected cleanly.
 - Content scripts inject on demand (PING-fail fallback) instead of every page you browse.
-- `/tool` requires the `X-Specter-Token` header once `mcp-bridge/.specter-token` exists (it is auto-generated on first run).

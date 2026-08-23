@@ -4,6 +4,7 @@
   window.__attk_injected = true;
 
   let cursorEl = null;
+  let cursorFadeTimer = null;
   let styleEl = null;
   let somActive = false;
   let somEls = [];
@@ -23,9 +24,13 @@
         height: 28px;
         pointer-events: none !important;
         z-index: 2147483647;
-        will-change: left, top, transform;
+        will-change: left, top, transform, opacity;
         filter: drop-shadow(0 2px 8px rgba(16,185,129,.7)) drop-shadow(0 0 16px rgba(16,185,129,.45));
-        transition: left 520ms cubic-bezier(.2,.8,.2,1), top 520ms cubic-bezier(.2,.8,.2,1), transform 120ms ease;
+        transition: left 520ms cubic-bezier(.2,.8,.2,1), top 520ms cubic-bezier(.2,.8,.2,1), transform 120ms ease, opacity 250ms ease;
+        opacity: 1;
+      }
+      #__attk-cursor.hidden {
+        opacity: 0;
       }
       #__attk-cursor .c-arrow {
         width: 28px;
@@ -88,9 +93,29 @@
     (document.head || document.documentElement).appendChild(styleEl);
   }
 
+  function scheduleCursorFade(delay = 1200) {
+    if (cursorFadeTimer) {
+      clearTimeout(cursorFadeTimer);
+      cursorFadeTimer = null;
+    }
+    cursorFadeTimer = setTimeout(() => {
+      if (cursorEl) {
+        cursorEl.classList.add('hidden');
+      }
+      cursorFadeTimer = null;
+    }, delay);
+  }
+
   function ensureCursor() {
     ensureStyle();
-    if (cursorEl && cursorEl.isConnected) return cursorEl;
+    if (cursorFadeTimer) {
+      clearTimeout(cursorFadeTimer);
+      cursorFadeTimer = null;
+    }
+    if (cursorEl && cursorEl.isConnected) {
+      cursorEl.classList.remove('hidden');
+      return cursorEl;
+    }
     cursorEl = document.createElement('div');
     cursorEl.id = '__attk-cursor';
     cursorEl.setAttribute('data-attk-internal', 'true');
@@ -381,6 +406,7 @@
       };
     } finally {
       clearHighlight();
+      scheduleCursorFade(1200);
     }
   }
 
@@ -515,6 +541,7 @@
       return { ok: true, textLength: text.length };
     } finally {
       clearHighlight();
+      scheduleCursorFade(1200);
     }
   }
 
@@ -956,6 +983,7 @@
       return { ok: true, from, to: { x: toX, y: toY } };
     } finally {
       clearHighlight();
+      scheduleCursorFade(1200);
     }
   }
 
@@ -1020,6 +1048,7 @@
             firePointerAndMouse(target, 'click', x, y);
           }
           c.classList.remove('clicking');
+          scheduleCursorFade(1200);
           return sendResponse({ ok: true, x, y });
         }
 

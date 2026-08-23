@@ -23,32 +23,6 @@ const MAX_BODY = 1_000_000;
 const VERSION = '1.2.1';
 const startedAt = Date.now();
 
-// --- auth token (optional but recommended) ---
-const TOKEN_PATH = path.join(__dirname, '.specter-token');
-let SPECTER_TOKEN = null;
-try {
-  if (fs.existsSync(TOKEN_PATH)) {
-    SPECTER_TOKEN = fs.readFileSync(TOKEN_PATH, 'utf8').trim();
-  } else {
-    SPECTER_TOKEN = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(TOKEN_PATH, SPECTER_TOKEN, { mode: 0o600 });
-    console.error(`[Specter] Generated token at ${TOKEN_PATH} — set header X-Specter-Token to use HTTP API`);
-  }
-} catch (e) {
-  console.error('[Specter] token setup:', e.message);
-}
-
-function requireTokenForTool(req, res) {
-  if (!SPECTER_TOKEN) return true;
-  const hdr = (req.headers['x-specter-token'] || req.headers['x-attk-token'] || '').trim();
-  if (hdr !== SPECTER_TOKEN) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: false, error: 'Missing or invalid X-Specter-Token (see mcp-bridge/.specter-token)' }));
-    return false;
-  }
-  return true;
-}
-
 // --- tool definitions ---
 const TOOLS = [
   { name: 'tab_navigate', description: 'Navigate the active/target tab to a new URL', inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to navigate to' } }, required: ['url'] } },
@@ -244,7 +218,6 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/tool' && req.method === 'POST') {
     const body = await readBody(req, res);
     if (body === null) return;
-    if (!requireTokenForTool(req, res)) return;
     try {
       const { tool, args } = JSON.parse(body || '{}');
       if (!tool) throw Object.assign(new Error('Missing "tool"'), { status: 400 });

@@ -49,7 +49,6 @@ content.js (Injected into active/target tab)
 - **Dynamic Scrolling**: Use `waitForScrollEnd` or check `in_viewport` flags from `tab_snapshot` before clicking elements.
 
 ### 4. Security & Endpoints
-- HTTP `/tool` calls require the `X-Specter-Token` header read from `mcp-bridge/.specter-token`.
 - Restricted URLs (`chrome://`, `edge://`, `chrome-extension://`, `about:`, `file:`) are strictly forbidden and guarded.
 - All bridge requests have a 1MB payload cap and standard JSON error response contracts (`400`, `404`, `413`, `429`, `503`).
 
