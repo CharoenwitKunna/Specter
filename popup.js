@@ -14,17 +14,19 @@ async function updateUI() {
     }
     const data = await res.json();
     const badge = document.getElementById('bridge-badge');
+    const label = badge?.querySelector('.status-label');
     if (data.ok) {
-      badge.textContent = data.polling ? 'Bridge: Active (Connected)' : 'Bridge: Active (Waiting)';
-      badge.className = 'badge online';
+      badge.className = 'status-pill online';
+      if (label) label.textContent = data.polling ? 'Active' : 'Connected';
     } else {
-      badge.textContent = 'Bridge: Error';
-      badge.className = 'badge offline';
+      badge.className = 'status-pill offline';
+      if (label) label.textContent = 'Error';
     }
   } catch {
     const badge = document.getElementById('bridge-badge');
-    badge.textContent = 'Bridge: Offline';
-    badge.className = 'badge offline';
+    const label = badge?.querySelector('.status-label');
+    if (badge) badge.className = 'status-pill offline';
+    if (label) label.textContent = 'Offline';
   }
 
   // Get background info
@@ -34,17 +36,20 @@ async function updateUI() {
     currentTargetId = targetTabId;
 
     const lockBtn = document.getElementById('btn-toggle-lock');
+    const btnIcon = lockBtn?.querySelector('.btn-icon');
+    const btnText = lockBtn?.querySelector('.btn-text');
     const targetTab = tabs.find(t => t.id === targetTabId);
 
     if (targetTab) {
-      document.getElementById('target-id').textContent = `ID: ${targetTab.id}`;
+      document.getElementById('target-id').textContent = `#${targetTab.id}`;
       document.getElementById('target-title').textContent = targetTab.title || 'Untitled Tab';
       document.getElementById('target-url').textContent = targetTab.url || '—';
       document.getElementById('target-url').title = targetTab.url || '';
-      
+
       // Update Button to Unlock
-      lockBtn.textContent = '🔓 Unlock Tab';
-      lockBtn.className = 'btn danger';
+      if (btnIcon) btnIcon.textContent = '🔓';
+      if (btnText) btnText.textContent = 'Unlock Tab';
+      lockBtn.className = 'btn btn-danger';
     } else {
       document.getElementById('target-id').textContent = '—';
       document.getElementById('target-title').textContent = 'No tab locked';
@@ -52,8 +57,9 @@ async function updateUI() {
       document.getElementById('target-url').title = '';
 
       // Update Button to Lock
-      lockBtn.textContent = '🎯 Lock Current Tab';
-      lockBtn.className = 'btn primary';
+      if (btnIcon) btnIcon.textContent = '🎯';
+      if (btnText) btnText.textContent = 'Lock Current Tab';
+      lockBtn.className = 'btn btn-primary';
     }
   });
 }
@@ -80,14 +86,14 @@ document.addEventListener('DOMContentLoaded', () => {
           setStatus('Error: ' + chrome.runtime.lastError.message);
           return;
         }
-        setStatus('Unlocked tab & removed group');
+        setStatus('Unlocked target');
         currentTargetId = null;
         updateUI();
       });
     } else {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) {
-        setStatus('No active tab found to lock');
+        setStatus('No active tab found');
         return;
       }
       chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'switch_tab', tabId: tab.id, focusWindow: false } }, () => {
@@ -95,7 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
           setStatus('Error: ' + chrome.runtime.lastError.message);
           return;
         }
-        setStatus('Locked tab & added to Specter group!');
+        setStatus('Locked to Specter group');
         currentTargetId = tab.id;
         updateUI();
       });
@@ -109,7 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setStatus('Error: ' + chrome.runtime.lastError.message);
         return;
       }
-      setStatus('Created worker tab!');
+      setStatus('Created worker tab');
       updateUI();
     });
   });
@@ -125,14 +131,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (targetId) {
         chrome.tabs.get(targetId, (tab) => {
           if (chrome.runtime.lastError || !tab) {
-            setStatus('Target tab no longer exists');
+            setStatus('Target tab closed');
             return;
           }
           chrome.tabs.update(targetId, { active: true });
           if (tab.windowId) {
             chrome.windows.update(tab.windowId, { focused: true });
           }
-          setStatus('Focused target tab');
+          setStatus('Focused worker tab');
         });
       } else {
         setStatus('No target tab set');
@@ -160,7 +166,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await navigator.clipboard.writeText(url);
         setStatus('Copied URL');
       } catch (e) {
-        setStatus('Copy failed: ' + (e?.message || e));
+        setStatus('Copy failed');
       }
     }
   });

@@ -1,46 +1,90 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Specter</title>
-<link rel="stylesheet" href="popup.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Specter</title>
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header>
-    <div class="logo">👻</div>
-    <div class="header-info">
-      <h1>Specter</h1>
-      <div id="bridge-badge" class="badge offline">Bridge: Checking...</div>
-    </div>
-  </header>
-
-  <main>
-    <section class="card">
-      <div class="card-label">Target Tab (<span id="target-id">—</span>)</div>
-      <div id="target-title" class="title-text">No tab locked</div>
-      <div id="target-url" class="url-text">—</div>
-      <div class="actions-row">
-        <button id="btn-toggle-lock" class="btn primary">🎯 Lock Current Tab</button>
-        <button id="btn-create-worker" class="btn secondary">➕ New Worker Tab</button>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-orb">👻</div>
+        <div class="brand-text">
+          <div class="title-row">
+            <h1>SPECTER</h1>
+            <span class="version-tag">v1.2.1</span>
+          </div>
+          <p class="subtitle">Ghost-Cursor Automation</p>
+        </div>
       </div>
-    </section>
-
-    <section class="card">
-      <div class="card-label">Tab Controls</div>
-      <div class="btn-grid">
-        <button id="btn-highlight-target" class="btn small">👀 Focus Worker Tab</button>
-        <button id="btn-toggle-som" class="btn small">🔢 Numbers (SOM)</button>
-        <button id="btn-copy-url" class="btn small">📋 Copy Target URL</button>
+      <div id="bridge-badge" class="status-pill offline">
+        <span class="status-dot"></span>
+        <span class="status-label">Offline</span>
       </div>
-    </section>
-  </main>
+    </header>
 
-  <footer>
-    <span id="status">Ready</span>
-    <span class="mcp-hint">Port 8765</span>
-  </footer>
+    <!-- Main Content -->
+    <main class="main">
+      <!-- Target Tab Card -->
+      <section class="card target-card">
+        <div class="card-header">
+          <span class="section-title">Active Target</span>
+          <span id="target-id" class="id-badge">—</span>
+        </div>
 
-<script src="popup.js"></script>
+        <div class="target-meta">
+          <div id="target-title" class="target-name">No tab locked</div>
+          <div id="target-url" class="target-link" title="">Click Lock to attach</div>
+        </div>
+
+        <div class="action-grid">
+          <button id="btn-toggle-lock" class="btn btn-primary">
+            <span class="btn-icon">🎯</span>
+            <span class="btn-text">Lock Current Tab</span>
+          </button>
+          <button id="btn-create-worker" class="btn btn-secondary">
+            <span class="btn-icon">➕</span>
+            <span class="btn-text">New Worker</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Quick Actions Grid -->
+      <section class="card tools-card">
+        <div class="card-header">
+          <span class="section-title">Tab Controls</span>
+        </div>
+
+        <div class="tools-grid">
+          <button id="btn-highlight-target" class="tool-btn">
+            <span class="tool-icon">👀</span>
+            <span class="tool-label">Focus Tab</span>
+          </button>
+          <button id="btn-toggle-som" class="tool-btn">
+            <span class="tool-icon">🔢</span>
+            <span class="tool-label">SOM IDs</span>
+          </button>
+          <button id="btn-copy-url" class="tool-btn">
+            <span class="tool-icon">📋</span>
+            <span class="tool-label">Copy URL</span>
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="status-wrapper">
+        <span class="pulse-indicator"></span>
+        <span id="status">Ready</span>
+      </div>
+      <div class="port-tag">127.0.0.1:8765</div>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
 </body>
 </html>
