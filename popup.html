@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Specter</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="logo">👻</div>
+    <div class="header-info">
+      <h1>Specter</h1>
+      <div id="bridge-badge" class="badge offline">Bridge: Checking...</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="card-label">Target Tab (<span id="target-id">—</span>)</div>
+      <div id="target-title" class="title-text">No tab locked</div>
+      <div id="target-url" class="url-text">—</div>
+      <div class="actions-row">
+        <button id="btn-toggle-lock" class="btn primary">🎯 Lock Current Tab</button>
+        <button id="btn-create-worker" class="btn secondary">➕ New Worker Tab</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-label">Tab Controls</div>
+      <div class="btn-grid">
+        <button id="btn-highlight-target" class="btn small">👀 Focus Worker Tab</button>
+        <button id="btn-toggle-som" class="btn small">🔢 Numbers (SOM)</button>
+        <button id="btn-copy-url" class="btn small">📋 Copy Target URL</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="status">Ready</span>
+    <span class="mcp-hint">Port 8765</span>
+  </footer>
+
+<script src="popup.js"></script>
+</body>
+</html>
