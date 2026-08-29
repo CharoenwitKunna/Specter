@@ -2,6 +2,17 @@
 
 All notable changes to the Specter browser extension and MCP bridge are documented in this file.
 
+## Unreleased
+
+### Added
+- Added the safe `batch_actions` MCP/HTTP tool for up to 50 serialized DOM interactions against the persisted target tab, with per-action results and configurable stop/continue behavior. Target-changing operations, screenshots, downloads, and unrestricted eval are rejected inside batches.
+- Preserved explicit `frameId` routing across batched inspection and interaction actions.
+- Hardened the WSS fast path with application heartbeat, job/result ACKs, bounded exponential reconnect backoff, and replay-safe result caching.
+
+### Reliability
+- WSS-dispatched jobs are requeued on disconnect or ACK timeout and fail over to HTTP polling; polling is stopped while WSS is healthy.
+- Added pending job/byte bounds and exposed WSS/queue state through `/health`.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

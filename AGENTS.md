@@ -21,7 +21,7 @@ Agent (Claude / LLM / Hermes)
       │ (MCP stdio or HTTP POST /tool)
       ▼
 mcp-bridge (Node.js :8765)
-      │ (Long-polling /poll and POST /result)
+      │ (WSS /ws heartbeat + ACKs; HTTP /poll and POST /result fallback)
       ▼
 background.js (Chrome MV3 Service Worker)
       │ (chrome.scripting.executeScript / chrome.tabs.sendMessage)

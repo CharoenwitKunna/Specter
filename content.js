@@ -3,12 +3,109 @@
   if (window.__attk_injected) return;
   window.__attk_injected = true;
 
+  // CSS.escape polyfill for older pages / edge contexts where CSS is undefined
+  if (typeof CSS === 'undefined' || !CSS.escape) {
+    const _cssEscape = (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
+    if (typeof CSS === 'undefined') {
+      // eslint-disable-next-line no-global-assign
+      self.CSS = { escape: _cssEscape };
+    } else if (!CSS.escape) {
+      CSS.escape = _cssEscape;
+    }
+  }
+
   let cursorEl = null;
   let cursorFadeTimer = null;
   let styleEl = null;
   let somActive = false;
   let somEls = [];
   let highlightEl = null;
+
+  // DOM inspection is frequently requested in bursts (for example a snapshot
+  // followed by find/query). Keep those reads cheap, but never retain a
+  // result for long enough to make a detached element actionable. Mutation
+  // and layout revisions are deliberately separate: scrolling changes rects,
+  // while DOM changes can invalidate both selectors and query results.
+  const DOM_QUERY_CACHE_MS = 200;
+  const SNAPSHOT_CACHE_MS = 150;
+  const SELECTOR_CACHE_MS = 500;
+  const MAX_TRAVERSAL_ROOTS = 128;
+  const MAX_TRAVERSAL_NODES = 20000;
+  const MAX_TRAVERSAL_DEPTH = 16;
+  let domRevision = 0;
+  let layoutRevision = 0;
+  let selectorCache = new WeakMap();
+  let queryCache = new WeakMap();
+  let snapshotCache = null;
+  let cacheObserver = null;
+  const observedRoots = new WeakSet();
+
+  function invalidateDomCaches() {
+    domRevision++;
+    selectorCache = new WeakMap();
+    queryCache = new WeakMap();
+    snapshotCache = null;
+  }
+
+  function invalidateLayoutCaches() {
+    layoutRevision++;
+    snapshotCache = null;
+  }
+
+  function observeCacheRoot(root) {
+    if (!cacheObserver || !root || observedRoots.has(root)) return;
+    try {
+      cacheObserver.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
+      observedRoots.add(root);
+    } catch {}
+  }
+
+  function installCacheInvalidation() {
+    if (typeof MutationObserver === 'function') {
+      try {
+        const observer = new MutationObserver(records => {
+          // Extension overlays are intentionally ignored. Their mutations do
+          // not affect page selectors or page query results.
+          if (records.length && records.every(record => {
+            const target = record.target;
+            if (isInternalNode(target)) return true;
+            if (record.type === 'childList') {
+              const nodes = [...record.addedNodes, ...record.removedNodes];
+              return nodes.length > 0 && nodes.every(isInternalNode);
+            }
+            return false;
+          })) return;
+          invalidateDomCaches();
+        });
+        cacheObserver = observer;
+        observeCacheRoot(document);
+      } catch {}
+    }
+    try {
+      window.addEventListener('scroll', invalidateLayoutCaches, { passive: true });
+      // Capture element-scrolling too; scroll events on nested containers do
+      // not reliably bubble to window but still move snapshot rectangles.
+      document.addEventListener('scroll', invalidateLayoutCaches, { capture: true, passive: true });
+      window.addEventListener('resize', invalidateLayoutCaches, { passive: true });
+    } catch {}
+  }
+
+  // A per-operation context ensures each element has one geometry read and
+  // one selector computation even when multiple response fields need them.
+  function inspectionContext() {
+    const rects = new WeakMap();
+    const selectors = new WeakMap();
+    return {
+      rect(el) {
+        if (!rects.has(el)) rects.set(el, el.getBoundingClientRect());
+        return rects.get(el);
+      },
+      selector(el) {
+        if (!selectors.has(el)) selectors.set(el, cssPath(el));
+        return selectors.get(el);
+      }
+    };
+  }
 
   // --- styles ---
   function ensureStyle() {
@@ -181,14 +278,14 @@
     return false;
   }
 
-  function isElementVisible(el) {
+  function isElementVisible(el, rect = null) {
     if (!el || !el.isConnected) return false;
     if (typeof el.checkVisibility === 'function') {
       try {
         if (!el.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true })) return false;
       } catch {}
     }
-    const r = el.getBoundingClientRect();
+    const r = rect || el.getBoundingClientRect();
     if (r.width <= 1 || r.height <= 1) return false;
     try {
       const style = window.getComputedStyle(el);
@@ -426,6 +523,8 @@
     } finally {
       clearHighlight();
       scheduleCursorFade(1200);
+      // A click may update framework state without changing DOM attributes.
+      invalidateDomCaches();
     }
   }
 
@@ -484,6 +583,19 @@
         try { tag?.remove(); } catch {}
       }, delay);
     }
+  }
+
+  function typeCharEvents(el, ch) {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, code: getEventCode(ch), bubbles: true, cancelable: true, composed: true }));
+    const beforeEvent = new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, composed: true,
+      inputType: 'insertText', data: ch
+    });
+    if (el.dispatchEvent(beforeEvent)) {
+      setNativeValue(el, el.value + ch);
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: ch }));
+    }
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, code: getEventCode(ch), bubbles: true, cancelable: true, composed: true }));
   }
 
   async function doType(selector, text, opts = {}) {
@@ -562,6 +674,18 @@
       } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
         el.focus();
 
+        // Optional: clear existing value first
+        if (opts.clear && el.value) {
+          setNativeValue(el, '');
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'deleteContentBackward' }));
+        }
+
+        if (opts.perChar && !el.readOnly) {
+          for (const ch of text) {
+            typeCharEvents(el, ch);
+            await sleep(18); // human-ish cadence; keeps autocomplete handlers happy
+          }
+        } else {
         // 1. keydown
         el.dispatchEvent(new KeyboardEvent('keydown', { key: text.length === 1 ? text : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
 
@@ -583,7 +707,8 @@
         }
 
         // 5. keyup & change
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: text.length === 1 ? text : 'Unidentified', bubbles: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: text.length === 1 ? text : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
+        }
         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } else {
         throw new Error('Element is not typable: <' + el.tagName?.toLowerCase() + '>');
@@ -593,6 +718,8 @@
     } finally {
       clearHighlight();
       scheduleCursorFade(1200);
+      // Value properties are not observable by MutationObserver.
+      invalidateDomCaches();
     }
   }
 
@@ -632,14 +759,24 @@
 
   function cssPath(el) {
     if (!el || isInternalNode(el)) return '';
+    const now = performance.now();
+    const cached = selectorCache.get(el);
+    if (cached && cached.revision === domRevision && now - cached.at < SELECTOR_CACHE_MS) {
+      return cached.value;
+    }
+
     const root = el.getRootNode ? el.getRootNode() : document;
+    let value = '';
     if (root instanceof ShadowRoot) {
       const host = root.host;
       const hostPath = cssPath(host);
       const childPath = cssPathWithinRoot(el, root);
-      return hostPath ? `${hostPath} >>> ${childPath}` : childPath;
+      value = hostPath ? `${hostPath} >>> ${childPath}` : childPath;
+    } else {
+      value = cssPathWithinRoot(el, document);
     }
-    return cssPathWithinRoot(el, document);
+    selectorCache.set(el, { value, revision: domRevision, at: now });
+    return value;
   }
 
   // --- SOM overlay (numbered interactables) ---
@@ -652,15 +789,16 @@
     }
     ensureStyle();
     const sels = 'a[href], button, [role="button"], input, textarea, select, [onclick], [tabindex]:not([tabindex="-1"])';
+    const inspect = inspectionContext();
+    const vh = window.innerHeight || document.documentElement.clientHeight;
     const els = queryAllDeep(document, sels).filter(el => {
       if (isInternalNode(el)) return false;
-      const r = el.getBoundingClientRect();
-      const vh = window.innerHeight || document.documentElement.clientHeight;
-      return r.width > 4 && r.height > 4 && r.top >= -200 && r.top < vh + 200 && isElementVisible(el);
+      const r = inspect.rect(el);
+      return r.width > 4 && r.height > 4 && r.top >= -200 && r.top < vh + 200 && isElementVisible(el, r);
     }).slice(0, 60);
 
     somEls = els.map((el, i) => {
-      const r = el.getBoundingClientRect();
+      const r = inspect.rect(el);
       const n = document.createElement('div');
       n.className = '__attk-som';
       n.setAttribute('data-attk-internal', 'true');
@@ -683,6 +821,7 @@
     const dy = { up: -amount, down: amount }[direction] ?? 0;
     window.scrollBy({ left: dx, top: dy, behavior: 'smooth' });
     await waitForScrollEnd(null, 600);
+    invalidateLayoutCaches();
     return { ok: true, scrollY: window.scrollY, scrollX: window.scrollX };
   }
 
@@ -744,13 +883,58 @@
       }
     }
 
+    // Keyboard handlers can update application state without a DOM mutation.
+    invalidateDomCaches();
     return { ok: true, key, code };
+  }
+
+  function semanticCandidates({ text = '', role = '', label = '', max = 20 } = {}, inspect = null) {
+    const wantedText = String(text || '').trim().toLowerCase();
+    const wantedLabel = String(label || '').trim().toLowerCase();
+    const wantedRole = String(role || '').trim().toLowerCase();
+    const sels = 'a[href], button, input, textarea, select, [role], [aria-label], [title], [onclick], [tabindex]:not([tabindex="-1"])';
+    const matches = queryAllDeep(document, sels).filter(el => {
+      if (isInternalNode(el) || !isElementVisible(el, inspect?.rect(el))) return false;
+      const elRole = (el.getAttribute('role') || el.tagName || '').toLowerCase();
+      const elLabel = (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || '').trim().toLowerCase();
+      const elText = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+      return (!wantedRole || elRole === wantedRole)
+        && (!wantedText || elText === wantedText || elText.includes(wantedText))
+        && (!wantedLabel || elLabel === wantedLabel || elLabel.includes(wantedLabel));
+    });
+    const exact = matches.filter(el => {
+      const elText = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+      const elLabel = (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || '').trim().toLowerCase();
+      return (wantedText && elText === wantedText) || (wantedLabel && elLabel === wantedLabel);
+    });
+    return (exact.length ? exact : matches).slice(0, Math.min(Math.max(1, max | 0), 50));
+  }
+
+  function doFind(opts = {}) {
+    try {
+      const inspect = inspectionContext();
+      const items = semanticCandidates(opts, inspect).map((el, index) => {
+        const r = inspect.rect(el);
+        return {
+          index,
+          tag: el.tagName?.toLowerCase() || '',
+          role: el.getAttribute('role') || el.tagName?.toLowerCase() || '',
+          text: (el.innerText || el.value || el.textContent || '').trim().slice(0, 160),
+          label: el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || '',
+          selector: inspect.selector(el),
+          rect: toPlainRect(r),
+          in_viewport: r.bottom >= 0 && r.top <= innerHeight && r.right >= 0 && r.left <= innerWidth
+        };
+      });
+      return { ok: true, count: items.length, items };
+    } catch (e) { return { ok: false, error: e.message }; }
   }
 
   function doQuery(sel) {
     try {
       const els = queryAllDeep(document, sel).filter(el => !isInternalNode(el));
       if (!els.length) return { ok: true, count: 0, items: [] };
+      const inspect = inspectionContext();
       return {
         ok: true,
         count: els.length,
@@ -758,8 +942,8 @@
           index: i,
           tag: el.tagName ? el.tagName.toLowerCase() : '',
           text: (el.innerText || el.value || el.textContent || '').trim().slice(0, 120),
-          rect: toPlainRect(el.getBoundingClientRect()),
-          selector: cssPath(el)
+          rect: toPlainRect(inspect.rect(el)),
+          selector: inspect.selector(el)
         }))
       };
     } catch (e) {
@@ -768,42 +952,87 @@
   }
 
   // --- shadow DOM & iframe tree walker ---
-  function* walkRoots(root = document) {
+  // Use an explicit worklist and visited set instead of recursive generators.
+  // Besides avoiding repeated work for shared/odd DOM implementations, this
+  // puts hard limits on hostile pages with very large frame/shadow trees.
+  function* walkRoots(root = document, limits = {}) {
     if (!root) return;
-    yield root;
-    try {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
-        acceptNode(node) {
-          if (isInternalNode(node)) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
+    const maxRoots = Math.min(limits.maxRoots ?? MAX_TRAVERSAL_ROOTS, MAX_TRAVERSAL_ROOTS);
+    const maxNodes = Math.min(limits.maxNodes ?? MAX_TRAVERSAL_NODES, MAX_TRAVERSAL_NODES);
+    const maxDepth = Math.min(limits.maxDepth ?? MAX_TRAVERSAL_DEPTH, MAX_TRAVERSAL_DEPTH);
+    const pending = [{ root, depth: 0 }];
+    const visitedRoots = new Set();
+    let traversedNodes = 0;
+
+    while (pending.length && visitedRoots.size < maxRoots) {
+      // LIFO keeps the historical depth-first ordering (important for stable
+      // snapshot IDs) without recursive generator frames.
+      const current = pending.pop();
+      if (!current?.root || visitedRoots.has(current.root)) continue;
+      visitedRoots.add(current.root);
+      observeCacheRoot(current.root);
+      yield current.root;
+      if (current.depth >= maxDepth || traversedNodes >= maxNodes) continue;
+
+      try {
+        const ownerDocument = current.root.ownerDocument || document;
+        const walker = ownerDocument.createTreeWalker(current.root, NodeFilter.SHOW_ELEMENT, {
+          acceptNode(node) {
+            if (isInternalNode(node)) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        });
+        const children = [];
+        let node;
+        while ((node = walker.nextNode())) {
+          if (++traversedNodes > maxNodes) break;
+          if (node.shadowRoot) children.push({ root: node.shadowRoot, depth: current.depth + 1 });
+          if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
+            try {
+              const doc = node.contentDocument || node.contentWindow?.document;
+              if (doc) children.push({ root: doc, depth: current.depth + 1 });
+            } catch {}
+          }
         }
-      });
-      let node;
-      while ((node = walker.nextNode())) {
-        if (node.shadowRoot) {
-          yield* walkRoots(node.shadowRoot);
-        }
-        if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
-          try {
-            const doc = node.contentDocument || node.contentWindow?.document;
-            if (doc) yield* walkRoots(doc);
-          } catch {}
-        }
-      }
-    } catch {}
+        // Push reverse so the first discovered nested root is visited first.
+        for (let i = children.length - 1; i >= 0; i--) pending.push(children[i]);
+      } catch {}
+    }
   }
 
   function queryAllDeep(root, selector) {
+    const searchRoot = root || document;
     const results = [];
     if (!selector || typeof selector !== 'string') return results;
-    for (const r of walkRoots(root || document)) {
+    const cacheSelector = selector.trim();
+    if (!cacheSelector) return results;
+    const now = performance.now();
+    let bySelector = queryCache.get(searchRoot);
+    if (!bySelector) {
+      bySelector = new Map();
+      queryCache.set(searchRoot, bySelector);
+    }
+    const cached = bySelector.get(cacheSelector);
+    if (cached && cached.revision === domRevision && now - cached.at < DOM_QUERY_CACHE_MS) {
+      // A mutation callback can be delayed by a microtask. Never return a
+      // detached node even during that small window.
+      return cached.results.filter(el => el && el.isConnected && !isInternalNode(el));
+    }
+
+    const seen = new Set();
+    for (const r of walkRoots(searchRoot)) {
       try {
-        const found = r.querySelectorAll(selector);
+        const found = r.querySelectorAll(cacheSelector);
         for (let i = 0; i < found.length; i++) {
-          if (!isInternalNode(found[i])) results.push(found[i]);
+          const el = found[i];
+          if (!isInternalNode(el) && !seen.has(el)) {
+            seen.add(el);
+            results.push(el);
+          }
         }
       } catch {}
     }
+    bySelector.set(cacheSelector, { results, revision: domRevision, at: now });
     return results;
   }
 
@@ -845,28 +1074,47 @@
   }
 
   function doSnapshot(max = 80, inViewportOnly = false) {
+    max = Math.min(Math.max(1, max | 0), 80);
+    const now = performance.now();
+    if (snapshotCache && snapshotCache.url === location.href
+      && snapshotCache.revision === domRevision
+      && snapshotCache.layoutRevision === layoutRevision
+      && snapshotCache.max === max
+      && snapshotCache.inViewportOnly === Boolean(inViewportOnly)
+      && now - snapshotCache.at < SNAPSHOT_CACHE_MS
+      && snapshotCache.entries.every(entry => entry.el?.isConnected && !isInternalNode(entry.el))) {
+      const snapMap = (window.__attk_snapMap instanceof Map) ? window.__attk_snapMap : (window.__attk_snapMap = new Map());
+      snapMap.clear();
+      snapMap.__pageUrl = location.href;
+      snapshotCache.entries.forEach((entry, i) => snapMap.set(i + 1, { el: entry.el, selector: entry.selector }));
+      return snapshotCache.result;
+    }
+
     const sels = 'a[href], button, [role="button"], input, textarea, select, h1, h2, h3, [onclick], [tabindex]:not([tabindex="-1"])';
     const allEls = queryAllDeep(document.body || document.documentElement, sels);
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const vw = window.innerWidth || document.documentElement.clientWidth;
+    const inspect = inspectionContext();
+    const entries = [];
 
-    const els = allEls.filter(el => {
-      if (isInternalNode(el)) return false;
-      const r = el.getBoundingClientRect();
-      if (r.width <= 2 || r.height <= 2) return false;
-      if (!isElementVisible(el)) return false;
-
-      if (inViewportOnly) {
-        return r.bottom >= 0 && r.top <= vh && r.right >= 0 && r.left <= vw;
-      }
-      return true;
-    }).slice(0, max);
+    // queryAllDeep already deduplicates across document, shadow, and frame
+    // roots. Read geometry once, then reuse it for filtering and serialization.
+    for (const el of allEls) {
+      if (isInternalNode(el)) continue;
+      const r = inspect.rect(el);
+      if (r.width <= 2 || r.height <= 2 || !isElementVisible(el, r)) continue;
+      const inView = r.bottom >= 0 && r.top <= vh && r.right >= 0 && r.left <= vw;
+      if (inViewportOnly && !inView) continue;
+      entries.push({ el, selector: inspect.selector(el), rect: r, inView });
+      if (entries.length >= max) break;
+    }
 
     const snapMap = (window.__attk_snapMap instanceof Map) ? window.__attk_snapMap : (window.__attk_snapMap = new Map());
     snapMap.clear();
-    els.forEach((el, i) => snapMap.set(i + 1, { el, selector: cssPath(el) }));
+    snapMap.__pageUrl = location.href;
+    entries.forEach((entry, i) => snapMap.set(i + 1, { el: entry.el, selector: entry.selector }));
 
-    return {
+    const result = {
       ok: true,
       url: location.href,
       title: document.title,
@@ -877,26 +1125,33 @@
         scrollY: window.scrollY,
         pageHeight: document.documentElement?.scrollHeight || document.body?.scrollHeight || 0
       },
-      elements: els.map((el, i) => {
-        const r = el.getBoundingClientRect();
-        const inView = r.bottom >= 0 && r.top <= vh && r.right >= 0 && r.left <= vw;
-        return {
-          id: i + 1,
-          tag: el.tagName ? el.tagName.toLowerCase() : '',
-          text: (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim().slice(0, 80),
-          selector: cssPath(el),
-          in_viewport: inView,
-          rect: {
-            x: r.left,
-            y: r.top,
-            width: r.width,
-            height: r.height,
-            page_y: r.top + window.scrollY
-          },
-          href: el.href || null
-        };
-      })
+      elements: entries.map((entry, i) => ({
+        id: i + 1,
+        tag: entry.el.tagName ? entry.el.tagName.toLowerCase() : '',
+        text: (entry.el.innerText || entry.el.value || entry.el.placeholder || entry.el.getAttribute('aria-label') || entry.el.getAttribute('title') || '').trim().slice(0, 80),
+        selector: entry.selector,
+        in_viewport: entry.inView,
+        rect: {
+          x: entry.rect.left,
+          y: entry.rect.top,
+          width: entry.rect.width,
+          height: entry.rect.height,
+          page_y: entry.rect.top + window.scrollY
+        },
+        href: entry.el.href || null
+      }))
     };
+    snapshotCache = {
+      at: now,
+      url: location.href,
+      revision: domRevision,
+      layoutRevision,
+      max,
+      inViewportOnly: Boolean(inViewportOnly),
+      entries,
+      result
+    };
+    return result;
   }
 
   // --- element-id click & drag ---
@@ -911,7 +1166,10 @@
       el = selector ? queryDeep(selector) : null;
       if (!el) {
         map.delete(numId);
-        throw new Error(`Element ${numId} left the page and selector (${selector}) no longer matches`);
+        const navNote = map.__pageUrl && map.__pageUrl !== location.href
+          ? ' — page navigated since snapshot (was ' + map.__pageUrl + '), take a new tab_snapshot'
+          : '';
+        throw new Error(`Element ${numId} left the page and selector (${selector}) no longer matches${navNote}`);
       }
     }
     return await doClick(el, { clickKind: kind, duration: 520 });
@@ -1041,10 +1299,13 @@
     } finally {
       clearHighlight();
       scheduleCursorFade(1200);
+      invalidateDomCaches();
     }
   }
 
   // --- message router ---
+  installCacheInvalidation();
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || typeof msg !== 'object') {
       sendResponse({ ok: false, error: 'Invalid message payload' });
@@ -1095,22 +1356,39 @@
           c.classList.add('clicking');
           ripple(x, y);
           await sleep(80);
-          const target = resolveTargetAt(x, y, document.body);
+          const rawTarget = document.elementFromPoint(x, y);
+          if (!rawTarget || isInternalNode(rawTarget)) throw new Error(`No clickable element at (${x}, ${y})`);
+          const target = resolveTargetAt(x, y, null);
+          if (!target || target === document.documentElement || target === document.body) throw new Error(`No clickable element at (${x}, ${y})`);
+          if (target.disabled || target.getAttribute('aria-disabled') === 'true') throw new Error('Target element is disabled');
+          const btn = msg.kind === 'right' ? 2 : 0;
+          const detail = msg.kind === 'double' ? 2 : 1;
           if (target) {
-            firePointerAndMouse(target, 'mouseover', x, y);
-            firePointerAndMouse(target, 'mousemove', x, y);
-            firePointerAndMouse(target, 'mousedown', x, y);
+            firePointerAndMouse(target, 'mouseover', x, y, btn, detail);
+            firePointerAndMouse(target, 'mousemove', x, y, btn, detail);
+            firePointerAndMouse(target, 'mousedown', x, y, btn, detail);
             await sleep(50);
-            firePointerAndMouse(target, 'mouseup', x, y);
-            firePointerAndMouse(target, 'click', x, y);
+            firePointerAndMouse(target, 'mouseup', x, y, btn, detail);
+            if (msg.kind === 'right') {
+              firePointerAndMouse(target, 'contextmenu', x, y, 2);
+            } else {
+              firePointerAndMouse(target, 'click', x, y, 0, detail);
+              if (msg.kind === 'double') {
+                firePointerAndMouse(target, 'mousedown', x, y, 0, 2);
+                firePointerAndMouse(target, 'mouseup', x, y, 0, 2);
+                firePointerAndMouse(target, 'click', x, y, 0, 2);
+                firePointerAndMouse(target, 'dblclick', x, y, 0, 2);
+              }
+            }
           }
           c.classList.remove('clicking');
           scheduleCursorFade(1200);
-          return sendResponse({ ok: true, x, y });
+          invalidateDomCaches();
+          return sendResponse({ ok: true, x, y, dispatched: true, tag: target.tagName.toLowerCase() });
         }
 
         if (msg.type === 'CURSOR_TYPE') {
-          const res = await doType(msg.selector, msg.text);
+          const res = await doType(msg.selector, msg.text, { clear: msg.clear === true, perChar: msg.perChar === true });
           return sendResponse(res);
         }
 
@@ -1127,6 +1405,10 @@
           return sendResponse(doQuery(msg.selector));
         }
 
+        if (msg.type === 'CURSOR_FIND') {
+          return sendResponse(doFind(msg));
+        }
+
         if (msg.type === 'CURSOR_SNAPSHOT') {
           return sendResponse(doSnapshot(msg.max ?? 80, msg.inViewportOnly));
         }
@@ -1138,6 +1420,7 @@
           if (!el) throw new Error('Element not found');
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
           await waitForScrollEnd(el);
+          invalidateLayoutCaches();
           return sendResponse({
             ok: true,
             scrollY: window.scrollY,
@@ -1149,6 +1432,14 @@
         if (msg.type === 'CURSOR_CLICK_ID') {
           const r = await doClickId(msg.element, msg.kind || 'click');
           return sendResponse(r);
+        }
+
+        if (msg.type === 'CURSOR_CLICK_SEMANTIC') {
+          const matches = semanticCandidates(msg);
+          if (!matches.length) throw new Error('No visible element matched the semantic target');
+          if (matches.length > 1) throw new Error(`Ambiguous semantic target: ${matches.length} visible elements matched; refine text, label, role, or use tab_find first`);
+          const r = await doClick(matches[0], { clickKind: msg.kind || 'click', duration: msg.duration || 520 });
+          return sendResponse({ ...r, matched: { text: (matches[0].innerText || matches[0].textContent || '').trim().slice(0, 120), selector: cssPath(matches[0]) } });
         }
 
         if (msg.type === 'CURSOR_DRAG') {

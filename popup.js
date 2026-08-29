@@ -1,17 +1,55 @@
 // popup.js — lightweight status & tab manager for Specter
 let currentTargetId = null;
 
+const BRIDGE_PORTS = [8765, 8766, 8767, 8768];
+let cachedBridgeUrl = null;
+let cachedBridgeAt = 0;
+const BRIDGE_CACHE_MS = 10000;
+
+async function getBridgeUrl() {
+  if (cachedBridgeUrl && Date.now() - cachedBridgeAt < BRIDGE_CACHE_MS) {
+    try {
+      const probe = await fetch(`${cachedBridgeUrl}/health`, { signal: AbortSignal.timeout(1500) });
+      if (probe.ok) {
+        const d = await probe.json().catch(() => null);
+        if (d?.ok) return cachedBridgeUrl;
+      }
+    } catch {}
+    cachedBridgeUrl = null;
+  }
+  for (const p of BRIDGE_PORTS) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${p}/health`, { signal: AbortSignal.timeout(1500) });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.ok) {
+          cachedBridgeUrl = `http://127.0.0.1:${p}`;
+          cachedBridgeAt = Date.now();
+          const portTag = document.querySelector('.port-tag');
+          if (portTag) portTag.textContent = `127.0.0.1:${p}`;
+          return cachedBridgeUrl;
+        }
+      }
+    } catch {}
+  }
+  const fallback = cachedBridgeUrl || `http://127.0.0.1:${BRIDGE_PORTS[0]}`;
+  const portTag = document.querySelector('.port-tag');
+  if (portTag) {
+    try {
+      const u = new URL(fallback);
+      portTag.textContent = u.host;
+    } catch {
+      portTag.textContent = fallback.replace(/^https?:\/\//, '');
+    }
+  }
+  return fallback;
+}
+
 async function updateUI() {
   // Check Bridge status
   try {
-    const controller = new AbortController();
-    const _to = setTimeout(() => controller.abort(), 1000);
-    let res;
-    try {
-      res = await fetch('http://127.0.0.1:8765/health', { signal: controller.signal });
-    } finally {
-      clearTimeout(_to);
-    }
+    const bridgeUrl = await getBridgeUrl();
+    const res = await fetch(`${bridgeUrl}/health`, { signal: AbortSignal.timeout(1500) });
     const data = await res.json();
     const badge = document.getElementById('bridge-badge');
     const label = badge?.querySelector('.status-label');

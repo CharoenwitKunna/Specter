@@ -1,0 +1,83 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = path.resolve(import.meta.dirname, '..', '..');
+const bridge = fs.readFileSync(path.join(root, 'mcp-bridge', 'bridge.js'), 'utf8');
+const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
+const content = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
+
+// Contract-level smoke tests: these run without Chrome and protect the
+// security/safety invariants that are easy to regress during refactors.
+test('eval requires explicit consent', () => {
+  assert.match(bridge, /allowEval:true/);
+  assert.match(background, /job\.allowEval !== true/);
+});
+
+test('target closure fails closed and jobs serialize', () => {
+  assert.match(background, /targetInvalidated/);
+  assert.match(background, /Target tab was closed; explicitly select/);
+  assert.match(background, /runSerialized/);
+});
+
+test('frame-aware messaging and all-frame injection are present', () => {
+  assert.match(background, /frameIds: \[0\]/);
+  assert.match(background, /frameId: msg\.frameId/);
+});
+
+test('coordinate clicks reject empty or disabled targets', () => {
+  assert.match(content, /No clickable element at/);
+  assert.match(content, /Target element is disabled/);
+});
+
+test('DOM inspection caches are short-lived and traversal is bounded', () => {
+  assert.match(content, /DOM_QUERY_CACHE_MS/);
+  assert.match(content, /SNAPSHOT_CACHE_MS/);
+  assert.match(content, /MAX_TRAVERSAL_NODES/);
+  assert.match(content, /observedRoots/);
+  assert.match(content, /inspectionContext/);
+});
+
+test('new tools are exposed and downloads are bounded', () => {
+  assert.match(bridge, /name: 'tab_find'/);
+  assert.match(bridge, /name: 'tab_visual_snapshot'/);
+  assert.match(bridge, /name: 'downloads'/);
+  assert.match(background, /Math\.min\(100, Math\.max\(1, job\.limit/);
+});
+
+test('batch actions are bounded, allowlisted, serialized, and report stop state', () => {
+  assert.match(bridge, /name: 'batch_actions'/);
+  assert.match(bridge, /MAX_BATCH_ACTIONS = 50/);
+  assert.match(bridge, /BATCH_TOOLS/);
+  assert.match(bridge, /stopOnError/);
+  assert.match(background, /case 'batch_actions'/);
+  assert.match(background, /BATCH_ACTIONS/);
+  assert.match(background, /stoppedAt/);
+  assert.match(background, /source: 'internal'/);
+  assert.match(background, /child\.batchTool \|\| child\.action/);
+});
+
+test('batched child actions preserve explicit frame routing', () => {
+  assert.match(bridge, /action: 'click_xy', x: args\.x, y: args\.y, frameId: args\.frameId/);
+  assert.match(bridge, /action: 'type', selector: args\.selector, text: args\.text, frameId: args\.frameId/);
+  assert.match(background, /type: 'CURSOR_TYPE', selector: job\.selector, text: job\.text, frameId: job\.frameId/);
+  assert.match(background, /waitForSelector\(job\.selector, job\.timeoutMs \?\? 10000, job\.frameId\)/);
+  assert.match(bridge, /frameId must be a non-negative integer/);
+  assert.match(background, /Invalid frameId at batch action index/);
+});
+
+test('WSS transport has reliability and bounded-queue contracts', () => {
+  assert.match(bridge, /WSS_HEARTBEAT_MS/);
+  assert.match(bridge, /\.ping\(\)/);
+  assert.match(bridge, /WSS_ACK_TIMEOUT/);
+  assert.match(bridge, /queueForFailover/);
+  assert.match(bridge, /MAX_QUEUE_BYTES/);
+  assert.match(bridge, /wsHealthy/);
+  assert.match(bridge, /type: 'ack'/);
+  assert.match(background, /WSS_RETRY_MAX_MS/);
+  assert.match(background, /wssRetryMs \* 2/);
+  assert.match(background, /stopPolling\(\)/);
+  assert.match(background, /startPolling\(\)/);
+  assert.match(background, /type: 'pong'/);
+});

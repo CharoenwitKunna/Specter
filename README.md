@@ -15,7 +15,7 @@ Ghost-cursor browser automation for AI agents. Chrome extension + MCP server tha
 ## How it works
 
 1. The Node bridge (`mcp-bridge/bridge.js`) exposes MCP stdio **and** an HTTP JSON API on `127.0.0.1:8765`.
-2. The extension's service worker long-polls the bridge, executes jobs in the target tab via `chrome.scripting`, and posts results back.
+2. The extension connects to the bridge over a local WSS fast path (`wss://127.0.0.1:8766/ws` by default, or `SPECTER_WSS_PORT`) when available, with HTTP long-polling as a compatibility fallback. WSS uses application heartbeat and job ACKs; accepted jobs are requeued on disconnect and the extension stops polling while WSS is healthy. It executes jobs in the target tab via `chrome.scripting` and posts results back.
 3. Agent-owned tabs are grouped under a green `[👻 Specter]` tab group so you always know what it's touching. You keep browsing — YouTube keeps playing.
 
 ## Tools
@@ -26,18 +26,35 @@ Ghost-cursor browser automation for AI agents. Chrome extension + MCP server tha
 | `tab_new` / `tab_close` | Open / close tabs (background by default) |
 | `tab_list` / `tab_switch` | Enumerate tabs, retarget the worker |
 | `tab_snapshot` | Structured element map: ids, selectors, rects, `in_viewport` flag |
+| `tab_find` | Find visible elements by text, accessible label, placeholder, title, or role |
+| `tab_visual_snapshot` | Screenshot plus semantic element metadata for visual fallback |
 | `tab_query` | CSS query with rects and generated selectors |
-| `tab_eval` | Run JavaScript in the page, get the result back |
+| `tab_eval` | Run JavaScript in the page (requires explicit `allowEval: true` consent) |
 | `tab_get_text` / `tab_get_html` / `tab_stats` | Page content extraction |
 | `tab_screenshot` | Visible-tab capture (MCP image block for vision models) |
+| `downloads` | List bounded recent download metadata and status |
 | `tab_scroll_into_view` | Scroll element into view by selector or snapshot id |
 | `click` | By selector, snapshot id, or x/y — right/double supported |
 | `type` / `key` | Framework-safe typing (React/Vue setter bypass), key events |
 | `scroll` | Pixel scroll or scroll-into-view |
 | `drag` | Press → eased glide → release, selector or coordinates |
+| `batch_actions` | Run up to 50 safe DOM/browser actions sequentially on the locked target; returns per-action results and stops on failure by default (`stopOnError:false` continues). |
 | `wait` | Sleep between actions (server-side `ms` delay; no tab round-trip — port `ATTK_PORT` on bridge, default 8765). MCP/HTTP `wait` avoids polling timeout. |
 
 Selectors pierce open shadow roots; elements below the fold are auto-scrolled into view before interaction.
+
+### Batch actions
+
+`batch_actions` accepts an ordered `actions` array whose entries use the individual tool shape, for example `{ "tool": "click", "args": { "selector": "button.next" } }`. It supports inspection and interaction tools (`tab_snapshot`, `tab_find`, `tab_query`, `tab_get_text`, `tab_get_html`, `tab_stats`, `tab_scroll_into_view`, `click`, `type`, `key`, `scroll`, `drag`, `wait`, and `wait_for`). Every action runs serially against the persisted target tab and keeps its `frameId` when supplied. Tab switching/creation/closing, navigation, screenshots, downloads, and unrestricted `tab_eval` are intentionally rejected inside a batch. Results contain an entry for every action plus `stopped`/`stoppedAt`; actions not reached after a stop are marked `skipped:true`. Set `stopOnError:false` (or `continueOnError:true`) to run all actions after failures.
+
+```json
+{"tool":"batch_actions","args":{"stopOnError":true,"actions":[
+  {"tool":"click","args":{"selector":"button.open"}},
+  {"tool":"wait_for","args":{"selector":".dialog"}},
+  {"tool":"type","args":{"selector":"input[name=q]","text":"specter"}},
+  {"tool":"key","args":{"key":"Enter"}}
+]}}
+```
 
 ## Setup
 
@@ -47,6 +64,8 @@ cd mcp-bridge
 npm install
 node bridge.js
 ```
+
+The bridge generates a self-signed localhost certificate in `mcp-bridge/certs/` for WSS. Chrome may require the generated certificate to be trusted in the local certificate store; otherwise the extension automatically continues using the HTTP polling fallback. WSS reconnects with bounded exponential backoff; HTTP queue capacity is bounded to 100 jobs/16 MiB (200 total pending calls), with 429/503 responses when saturated.
 or double-click `start.bat`.
 
 **Extension:** load this folder as an unpacked extension at `chrome://extensions` (Developer mode → Load unpacked).
@@ -57,7 +76,7 @@ or double-click `start.bat`.
   "mcpServers": {
     "specter": {
       "command": "node",
-      "args": ["C:/path/to/Specter/mcp-bridge/bridge.js"]  // adjust if your folder is still named BrowerExtension
+      "args": ["C:/path/to/Specter/mcp-bridge/bridge.js"]
     }
   }
 }
@@ -67,6 +86,7 @@ or double-click `start.bat`.
 ```bash
 curl -X POST http://127.0.0.1:8765/tool \
   -H 'Content-Type: application/json' \
+  -H "X-Specter-Token: $(cat mcp-bridge/.specter-token)" \
   -d '{"tool":"click","args":{"selector":"button.submit"}}'
 ```
 
