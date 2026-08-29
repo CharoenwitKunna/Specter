@@ -46,27 +46,6 @@ async function getBridgeUrl() {
 }
 
 async function updateUI() {
-  // Check Bridge status
-  try {
-    const bridgeUrl = await getBridgeUrl();
-    const res = await fetch(`${bridgeUrl}/health`, { signal: AbortSignal.timeout(1500) });
-    const data = await res.json();
-    const badge = document.getElementById('bridge-badge');
-    const label = badge?.querySelector('.status-label');
-    if (data.ok) {
-      badge.className = 'status-pill online';
-      if (label) label.textContent = data.polling ? 'Active' : 'Connected';
-    } else {
-      badge.className = 'status-pill offline';
-      if (label) label.textContent = 'Error';
-    }
-  } catch {
-    const badge = document.getElementById('bridge-badge');
-    const label = badge?.querySelector('.status-label');
-    if (badge) badge.className = 'status-pill offline';
-    if (label) label.textContent = 'Offline';
-  }
-
   // Get background info
   chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'list_tabs' } }, (res) => {
     if (chrome.runtime.lastError || !res?.ok || !res?.result?.tabs) return;

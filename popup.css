@@ -47,11 +47,6 @@ h1 { margin: 0; font-size: 15px; line-height: 1.1; font-weight: 700; letter-spac
 .version-tag { color: var(--faint); font: 10px var(--mono); }
 .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
 
-.status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); font-size: 10px; white-space: nowrap; }
-.status-dot, .pulse-indicator { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.status-pill.online { color: var(--accent); border-color: #285b48; background: #10231d; }
-.status-pill.online .status-dot { box-shadow: 0 0 0 3px #1a3d30; }
-.status-pill.offline { color: var(--danger); background: #21171c; border-color: #4a2b34; }
 
 .card { padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
 .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
@@ -85,8 +80,5 @@ button { font: inherit; }
 .tool-copy strong { font-size: 11px; font-weight: 650; transition: color .15s; }
 .tool-copy small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .tool-arrow { color: var(--faint); font-size: 20px; line-height: 1; }
-
-.footer { display: flex; align-items: center; gap: 7px; min-height: 14px; color: var(--accent); font-size: 10px; font-weight: 600; }
-.pulse-indicator { box-shadow: 0 0 0 3px #18392d; }
 
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
