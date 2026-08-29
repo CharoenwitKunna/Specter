@@ -8,83 +8,76 @@
 </head>
 <body>
   <div class="app-container">
-    <!-- Header -->
     <header class="header">
       <div class="brand">
-        <div class="logo-orb">👻</div>
+        <div class="logo-mark" aria-hidden="true">S</div>
         <div class="brand-text">
           <div class="title-row">
-            <h1>SPECTER</h1>
-            <span class="version-tag">v1.3.0</span>
+            <h1>Specter</h1>
+            <span class="version-tag">1.3.0</span>
           </div>
-          <p class="subtitle">Ghost-Cursor Automation</p>
+          <p class="subtitle">Browser automation bridge</p>
         </div>
       </div>
-      <div id="bridge-badge" class="status-pill offline">
+      <div id="bridge-badge" class="status-pill offline" aria-live="polite">
         <span class="status-dot"></span>
         <span class="status-label">Offline</span>
       </div>
     </header>
 
-    <!-- Main Content -->
     <main class="main">
-      <!-- Target Tab Card -->
-      <section class="card target-card">
+      <section class="target-card card">
         <div class="card-header">
-          <span class="section-title">Active Target</span>
+          <span class="section-title">Target tab</span>
           <span id="target-id" class="id-badge">—</span>
         </div>
 
         <div class="target-meta">
           <div id="target-title" class="target-name">No tab locked</div>
-          <div id="target-url" class="target-link" title="">Click Lock to attach</div>
+          <div id="target-url" class="target-link" title="">Lock a tab to get started</div>
         </div>
 
         <div class="action-grid">
           <button id="btn-toggle-lock" class="btn btn-primary">
-            <span class="btn-icon">🎯</span>
-            <span class="btn-text">Lock Current Tab</span>
+            <span class="btn-icon" aria-hidden="true">◎</span>
+            <span class="btn-text">Lock current tab</span>
           </button>
           <button id="btn-create-worker" class="btn btn-secondary">
-            <span class="btn-icon">➕</span>
-            <span class="btn-text">New Worker</span>
+            <span class="btn-icon" aria-hidden="true">+</span>
+            <span class="btn-text">New worker</span>
           </button>
         </div>
       </section>
 
-      <!-- Quick Actions Grid -->
-      <section class="card tools-card">
+      <section class="tools-card card">
         <div class="card-header">
-          <span class="section-title">Tab Controls</span>
+          <span class="section-title">Quick actions</span>
         </div>
-
-        <div class="tools-grid">
+        <div class="tools-list">
           <button id="btn-highlight-target" class="tool-btn">
-            <span class="tool-icon">👀</span>
-            <span class="tool-label">Focus Tab</span>
+            <span class="tool-icon" aria-hidden="true">↗</span>
+            <span class="tool-copy"><strong>Focus target</strong><small>Bring the locked tab forward</small></span>
+            <span class="tool-arrow" aria-hidden="true">›</span>
           </button>
           <button id="btn-toggle-som" class="tool-btn">
-            <span class="tool-icon">🔢</span>
-            <span class="tool-label">SOM IDs</span>
+            <span class="tool-icon" aria-hidden="true">#</span>
+            <span class="tool-copy"><strong>Toggle element IDs</strong><small>Show or hide clickable targets</small></span>
+            <span class="tool-arrow" aria-hidden="true">›</span>
           </button>
           <button id="btn-copy-url" class="tool-btn">
-            <span class="tool-icon">📋</span>
-            <span class="tool-label">Copy URL</span>
+            <span class="tool-icon" aria-hidden="true">□</span>
+            <span class="tool-copy"><strong>Copy target URL</strong><small>Copy the active page address</small></span>
+            <span class="tool-arrow" aria-hidden="true">›</span>
           </button>
         </div>
       </section>
     </main>
 
-    <!-- Footer -->
-    <footer class="footer">
-      <div class="status-wrapper">
-        <span class="pulse-indicator"></span>
-        <span id="status">Ready</span>
-      </div>
-      <div class="port-tag">127.0.0.1:8765</div>
+    <footer class="footer" aria-live="polite">
+      <span class="pulse-indicator"></span>
+      <span id="status">Ready</span>
     </footer>
   </div>
-
   <script src="popup.js"></script>
 </body>
 </html>
