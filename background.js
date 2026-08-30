@@ -260,23 +260,25 @@ function isRestrictedUrl(url) {
 async function getTargetTab() {
   if (targetInvalidated) throw new Error('Target tab was closed; explicitly select a new tab with tab_switch');
   const storedId = await getStoredTargetTabId();
-  if (storedId) {
-    try {
-      const tab = await chrome.tabs.get(storedId);
-      if (tab) return tab;
-    } catch {
-      await setTargetTabId(null);
+  // Never silently fall back to the active tab. A missing lock means there is
+  // no automation target, which prevents an agent from leaking into another
+  // tab after the locked tab is closed or unlocked.
+  if (!storedId) {
+    // Unlocked mode may operate on the active tab only when it is already
+    // owned by Specter. Never fall back to an unrelated browser tab.
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (await isSpecterGroupTab(activeTab)) return activeTab;
+    return null;
+  }
+  try {
+    const tab = await chrome.tabs.get(storedId);
+    if (tab) {
+      // Keep the locked tab in Specter's group if the user moved it out.
+      await markTabWithAgentGroup(tab.id);
+      return tab;
     }
-  }
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (tab?.id) {
-    await setTargetTabId(tab.id);
-    return tab;
-  }
-  const [anyTab] = await chrome.tabs.query({ active: true });
-  if (anyTab?.id) {
-    await setTargetTabId(anyTab.id);
-    return anyTab;
+  } catch {
+    await setTargetTabId(null);
   }
   return null;
 }
@@ -318,6 +320,22 @@ async function getOrCreateAgentGroup(tabId) {
 async function markTabWithAgentGroup(tabId) {
   if (!tabId) return;
   await getOrCreateAgentGroup(tabId);
+}
+
+async function isSpecterGroupTab(tab) {
+  if (!tab?.id || !chrome.tabGroups || !tab.groupId || tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) return false;
+  try {
+    const group = await chrome.tabGroups.get(tab.groupId);
+    return group.title === '👻 Specter';
+  } catch { return false; }
+}
+
+async function getSpecterGroupTabs() {
+  const tabs = await chrome.tabs.query({});
+  if (!chrome.tabGroups) return [];
+  const owned = [];
+  for (const tab of tabs) if (await isSpecterGroupTab(tab)) owned.push(tab);
+  return owned;
 }
 
 async function unmarkTabFromAgentGroup(tabId) {
@@ -444,21 +462,25 @@ async function handleJob(job) {
         break;
       }
       case 'new_tab': {
-        if (job.url && !isAllowedUrl(job.url)) throw new Error('new_tab only allows http/https URLs');
-        const shouldBeActive = job.active === true;
-        const [activeBefore] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        const tab = await chrome.tabs.create({ url: job.url || 'about:blank', active: shouldBeActive });
-        await setTargetTabId(tab.id);
+        throw new Error('new_tab is disabled: Specter is locked to one tab and cannot create or switch targets');
+      }
+      case 'add_to_group': {
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tab?.id) throw new Error('No active tab found');
         await markTabWithAgentGroup(tab.id);
-        if (!shouldBeActive && activeBefore?.id && activeBefore.id !== tab.id) {
-          try { await chrome.tabs.update(activeBefore.id, { active: true }); } catch {}
+        // Adding a tab to the group selects it only when no tab is locked.
+        const currentTarget = await getStoredTargetTabId();
+        if (!currentTarget) {
+          targetInvalidated = false;
+          await setTargetTabId(tab.id);
         }
-        result = { ok: true, tabId: tab.id, url: tab.url || job.url || 'about:blank' };
+        result = { ok: true, tabId: tab.id, targetTabId: currentTarget || tab.id };
         break;
       }
       case 'list_tabs': {
-        const tabs = await chrome.tabs.query({});
         const currentId = await getStoredTargetTabId();
+        // Specter owns every tab inside its named group, but nothing outside it.
+        const tabs = await getSpecterGroupTabs();
         result = {
           ok: true,
           targetTabId: currentId,
@@ -476,10 +498,15 @@ async function handleJob(job) {
       }
       case 'switch_tab': {
         const tabId = typeof job.tabId === 'number' ? job.tabId : (job.tabId ? parseInt(job.tabId, 10) : null);
-        if (tabId !== null) {
-          try { await chrome.tabs.get(tabId); } catch { throw new Error(`Target tab ${tabId} does not exist`); }
-        }
         const prevTargetId = await getStoredTargetTabId();
+        if (prevTargetId && tabId !== null && tabId !== prevTargetId) {
+          throw new Error(`Specter is locked to tab ${prevTargetId}; unlock it before selecting another tab`);
+        }
+        if (tabId !== null) {
+          let tab;
+          try { tab = await chrome.tabs.get(tabId); } catch { throw new Error(`Target tab ${tabId} does not exist`); }
+          if (!(await isSpecterGroupTab(tab))) throw new Error('Specter can only switch to tabs inside the 👻 Specter group');
+        }
         if (prevTargetId && prevTargetId !== tabId) {
           await unmarkTabFromAgentGroup(prevTargetId);
         }
@@ -499,6 +526,9 @@ async function handleJob(job) {
         const tabId = job.tabId ? (typeof job.tabId === 'number' ? job.tabId : parseInt(job.tabId, 10)) : currentTab?.id;
         if (!tabId) throw new Error('No target tab found to close');
         const currentTarget = await getStoredTargetTabId();
+        const tab = await chrome.tabs.get(tabId).catch(() => null);
+        if (!(await isSpecterGroupTab(tab))) throw new Error('Specter can only close tabs inside the 👻 Specter group');
+        if (currentTarget && currentTarget !== tabId) throw new Error(`Specter is locked to tab ${currentTarget}; cannot close another tab`);
         if (currentTarget === tabId) await setTargetTabId(null);
         await chrome.tabs.remove(tabId);
         result = { ok: true, closedTabId: tabId };
@@ -534,7 +564,7 @@ async function handleJob(job) {
       case 'click_semantic': result = await sendToActive({ type: 'CURSOR_CLICK_SEMANTIC', text: job.text, label: job.label, role: job.role, frameId: job.frameId, kind: job.kind || 'click', duration: job.duration || 520 }); break;
       case 'click': result = await sendToActive({ type: 'CURSOR_CLICK', selector: job.selector, frameId: job.frameId, kind: job.kind || 'click', duration: job.duration || 520 }); break;
       case 'click_xy': result = await sendToActive({ type: 'CURSOR_CLICK_EL', x: job.x, y: job.y, frameId: job.frameId, kind: job.kind || 'click', duration: job.duration || 520 }); break;
-      case 'type': result = await sendToActive({ type: 'CURSOR_TYPE', selector: job.selector, text: job.text, frameId: job.frameId, clear: job.clear === true, perChar: job.perChar === true }); break;
+      case 'type': result = await sendToActive({ type: 'CURSOR_TYPE', selector: job.selector, text: job.text, frameId: job.frameId, clear: job.clear === true, perChar: job.perChar !== false }); break;
       case 'key': result = await sendToActive({ type: 'CURSOR_KEY', key: job.key, selector: job.selector, frameId: job.frameId }); break;
       case 'scroll': result = await sendToActive({ type: 'CURSOR_SCROLL', direction: job.direction || 'down', amount: job.amount ?? 400, frameId: job.frameId }); break;
       case 'som': result = await sendToActive({ type: 'CURSOR_SOM_TOGGLE', frameId: job.frameId }); break;

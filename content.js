@@ -14,12 +14,34 @@
     }
   }
 
+  // Keep overlay identifiers instance-local: pages occasionally use generic IDs
+  // such as "activity" or "cursor" themselves.
+  const overlayToken = Math.random().toString(36).slice(2, 10);
+  const overlayId = role => `__attk-${role}-${overlayToken}`;
+  const CURSOR_HOTSPOT = { x: 2, y: 2 };
   let cursorEl = null;
   let cursorFadeTimer = null;
+  let activityEl = null;
+  let activityHideTimer = null;
+  let typingPreviewEl = null;
+  let typingPreviewHideTimer = null;
+  let typingPreviewAnchor = null;
   let styleEl = null;
   let somActive = false;
   let somEls = [];
   let highlightEl = null;
+  let activeInputTagEl = null;
+  let overlayRepositionFrame = null;
+  let overlayResizeObserver = null;
+  let typingQueue = Promise.resolve();
+
+  function reducedMotion() {
+    try { return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true; } catch { return false; }
+  }
+
+  function scrollBehavior() { return reducedMotion() ? 'instant' : 'smooth'; }
+
+  function motionDelay(ms) { return reducedMotion() ? 0 : ms; }
 
   // DOM inspection is frequently requested in bursts (for example a snapshot
   // followed by find/query). Keep those reads cheap, but never retain a
@@ -68,6 +90,9 @@
           // not affect page selectors or page query results.
           if (records.length && records.every(record => {
             const target = record.target;
+            // A highlighted page element is still a layout anchor, not an
+            // extension overlay; observe its framework/layout mutations.
+            if (target?.classList?.contains('__attk-hl')) return false;
             if (isInternalNode(target)) return true;
             if (record.type === 'childList') {
               const nodes = [...record.addedNodes, ...record.removedNodes];
@@ -76,17 +101,18 @@
             return false;
           })) return;
           invalidateDomCaches();
+          scheduleOverlayReposition();
         });
         cacheObserver = observer;
         observeCacheRoot(document);
       } catch {}
     }
     try {
-      window.addEventListener('scroll', invalidateLayoutCaches, { passive: true });
+      window.addEventListener('scroll', () => { invalidateLayoutCaches(); scheduleOverlayReposition(); }, { passive: true });
       // Capture element-scrolling too; scroll events on nested containers do
       // not reliably bubble to window but still move snapshot rectangles.
-      document.addEventListener('scroll', invalidateLayoutCaches, { capture: true, passive: true });
-      window.addEventListener('resize', invalidateLayoutCaches, { passive: true });
+      document.addEventListener('scroll', () => { invalidateLayoutCaches(); scheduleOverlayReposition(); }, { capture: true, passive: true });
+      window.addEventListener('resize', () => { invalidateLayoutCaches(); scheduleOverlayReposition(); }, { passive: true });
     } catch {}
   }
 
@@ -111,9 +137,11 @@
   function ensureStyle() {
     if (styleEl && styleEl.isConnected) return;
     styleEl = document.createElement('style');
-    styleEl.id = '__attk-style';
+    styleEl.id = overlayId('style');
+    styleEl.setAttribute('data-attk-role', 'style');
+    styleEl.setAttribute('data-attk-internal', 'true');
     styleEl.textContent = `
-      #__attk-cursor {
+      [data-attk-role="cursor"] {
         position: fixed;
         left: -100px;
         top: -100px;
@@ -122,38 +150,29 @@
         pointer-events: none !important;
         z-index: 2147483647;
         will-change: left, top, transform, opacity;
-        filter: drop-shadow(0 2px 8px rgba(16,185,129,.7)) drop-shadow(0 0 16px rgba(16,185,129,.45));
+        filter: drop-shadow(0 2px 8px rgba(103,232,176,.7)) drop-shadow(0 0 16px rgba(103,232,176,.45));
         transition: left 520ms cubic-bezier(.2,.8,.2,1), top 520ms cubic-bezier(.2,.8,.2,1), transform 120ms ease, opacity 250ms ease;
         opacity: 1;
+        contain: layout style paint;
       }
-      #__attk-cursor.hidden {
+      [data-attk-role="cursor"].hidden {
         opacity: 0;
       }
-      #__attk-cursor .c-arrow {
+      [data-attk-role="cursor"] .c-arrow {
         width: 28px;
         height: 28px;
         transform-origin: 2px 2px;
         transition: transform 120ms ease;
       }
-      #__attk-cursor.clicking .c-arrow {
+      [data-attk-role="cursor"].clicking .c-arrow {
         transform: scale(.82);
       }
-      #__attk-cursor .c-dot {
-        position: absolute;
-        left: 2px;
-        top: 2px;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: #fff;
-        box-shadow: 0 0 0 2px #10b981;
-      }
-      #__attk-ripple {
+      [data-attk-role="ripple"] {
         position: fixed;
         width: 36px;
         height: 36px;
         border-radius: 50%;
-        border: 2px solid #10b981;
+        border: 2px solid #67e8b0;
         pointer-events: none !important;
         z-index: 2147483646;
         transform: translate(-50%,-50%) scale(.3);
@@ -164,21 +183,147 @@
         to { transform: translate(-50%,-50%) scale(1.8); opacity: 0; }
       }
       .__attk-hl {
-        outline: 2px solid #10b981 !important;
+        outline: 2px solid #67e8b0 !important;
         outline-offset: 2px !important;
-        box-shadow: 0 0 0 6px rgba(16,185,129,.22) !important;
+        box-shadow: 0 0 0 6px rgba(103,232,176,.22) !important;
         transition: outline .15s;
       }
+      [data-attk-role="activity"] {
+        position: fixed;
+        top: 16px;
+        right: 18px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px 7px 9px;
+        color: #082017;
+        background: #67e8b0;
+        border: 1px solid rgba(255,255,255,.85);
+        border-radius: 999px;
+        box-shadow: 0 4px 18px rgba(8,32,23,.28), 0 0 18px rgba(103,232,176,.3);
+        font: 700 11px/1 system-ui, -apple-system, sans-serif;
+        pointer-events: none !important;
+        z-index: 2147483647;
+        animation: __attk-activity-in .18s ease-out;
+      }
+      [data-attk-role="activity"] .a-icon { font-size: 13px; }
+      [data-attk-role="activity"] .a-dots { display: inline-flex; gap: 2px; align-items: end; height: 12px; }
+      [data-attk-role="activity"] .a-dots i {
+        display: block;
+        width: 3px;
+        height: 5px;
+        border-radius: 2px;
+        background: #082017;
+        animation: __attk-key .72s ease-in-out infinite;
+      }
+      [data-attk-role="activity"] .a-dots i:nth-child(2) { animation-delay: .12s; }
+      [data-attk-role="activity"] .a-dots i:nth-child(3) { animation-delay: .24s; }
+      @keyframes __attk-key {
+        0%, 100% { height: 5px; opacity: .45; }
+        45% { height: 12px; opacity: 1; }
+      }
+      @keyframes __attk-activity-in {
+        from { opacity: 0; transform: translateY(-5px) scale(.96); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        [data-attk-role], [data-attk-role] * {
+          animation: none !important;
+          transition: none !important;
+        }
+        [data-attk-role="ripple"] { display: none !important; }
+        .__attk-input-tag, .__attk-som, .__attk-hl { animation: none !important; transition: none !important; }
+      }
+      [data-attk-role="typing-preview"] {
+        position: fixed;
+        max-width: min(320px, calc(100vw - 24px));
+        padding: 10px 13px;
+        color: #f8fffc;
+        /* Opaque fallback keeps text legible when backdrop-filter is unavailable. */
+        background: #173d30;
+        border: 1px solid rgba(255,255,255,.62);
+        border-radius: 14px;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.34), 0 8px 28px rgba(0,0,0,.28), 0 0 20px rgba(103,232,176,.22);
+        font: 11px/1.35 system-ui, -apple-system, sans-serif;
+      }
+      @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        [data-attk-role="typing-preview"] {
+          background: linear-gradient(135deg, rgba(255,255,255,.22), rgba(103,232,176,.10) 48%, rgba(8,32,23,.34));
+          backdrop-filter: blur(16px) saturate(145%);
+          -webkit-backdrop-filter: blur(16px) saturate(145%);
+        }
+      }
+      [data-attk-role="typing-preview"] {
+        pointer-events: none !important;
+        z-index: 2147483647;
+        animation: __attk-preview-in .16s ease-out;
+      }
+      [data-attk-role="typing-preview"]::before {
+        content: '';
+        position: absolute;
+        top: 5px;
+        left: 16px;
+        right: 16px;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,.7), transparent);
+      }
+      [data-attk-role="typing-preview"]::after {
+        content: '';
+        position: absolute;
+        left: var(--attk-arrow-left, 18px);
+        bottom: -7px;
+        width: 12px;
+        height: 12px;
+        background: #2d5f4d;
+        border-right: 1px solid rgba(255,255,255,.62);
+        border-bottom: 1px solid rgba(255,255,255,.62);
+        transform: rotate(45deg);
+      }
+      @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        [data-attk-role="typing-preview"]::after { backdrop-filter: blur(16px); }
+      }
+      [data-attk-role="typing-preview"].below::after {
+        top: -7px;
+        bottom: auto;
+        transform: rotate(225deg);
+      }
+      [data-attk-role="typing-preview"] .p-text {
+        overflow: hidden;
+        display: block;
+        color: #f8fffc;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      [data-attk-role="typing-preview"].typing-active .p-text::after {
+        content: '';
+        display: inline-block;
+        width: 2px;
+        height: 13px;
+        margin-left: 5px;
+        vertical-align: -2px;
+        border-radius: 2px;
+        background: #b8ffdc;
+        animation: __attk-caret .72s step-end infinite;
+      }
+      @keyframes __attk-preview-in {
+        from { opacity: 0; transform: translateY(4px) scale(.97); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      @keyframes __attk-caret {
+        0%, 45% { opacity: 1; }
+        46%, 100% { opacity: 0; }
+      }
       .__attk-input-focused {
-        outline: 2px solid #10b981 !important;
+        outline: 2px solid #67e8b0 !important;
         outline-offset: 2px !important;
-        box-shadow: 0 0 0 4px rgba(16,185,129,.35), 0 0 12px rgba(16,185,129,.5) !important;
+        box-shadow: 0 0 0 4px rgba(103,232,176,.35), 0 0 12px rgba(103,232,176,.5) !important;
         transition: box-shadow .2s ease, outline .2s ease !important;
       }
       .__attk-input-tag {
         position: fixed;
-        background: #10b981;
-        color: #042316;
+        background: #67e8b0;
+        color: #082017;
         font: 700 10px/14px ui-monospace, SFMono-Regular, Consolas, sans-serif;
         padding: 2px 6px;
         border-radius: 4px;
@@ -194,8 +339,8 @@
         height: 20px;
         padding: 0 5px;
         border-radius: 10px;
-        background: #10b981;
-        color: #042316;
+        background: #67e8b0;
+        color: #082017;
         font: 700 11px/20px system-ui, -apple-system, sans-serif;
         text-align: center;
         pointer-events: none !important;
@@ -207,6 +352,160 @@
       }
     `;
     (document.head || document.documentElement).appendChild(styleEl);
+  }
+
+  function showActivity(label = 'Typing') {
+    ensureStyle();
+    if (activityHideTimer) {
+      clearTimeout(activityHideTimer);
+      activityHideTimer = null;
+    }
+    if (!activityEl || !activityEl.isConnected) {
+      activityEl = document.createElement('div');
+      activityEl.id = overlayId('activity');
+      activityEl.setAttribute('data-attk-role', 'activity');
+      activityEl.setAttribute('data-attk-internal', 'true');
+      activityEl.setAttribute('role', 'status');
+      activityEl.setAttribute('aria-live', 'polite');
+      activityEl.setAttribute('aria-atomic', 'true');
+      (document.body || document.documentElement).appendChild(activityEl);
+    }
+    activityEl.replaceChildren();
+    const icon = document.createElement('span');
+    icon.className = 'a-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '⌨';
+    const labelEl = document.createElement('span');
+    labelEl.textContent = String(label) + '...';
+    const dots = document.createElement('span');
+    dots.className = 'a-dots';
+    dots.setAttribute('aria-hidden', 'true');
+    dots.append(document.createElement('i'), document.createElement('i'), document.createElement('i'));
+    activityEl.append(icon, labelEl, dots);
+  }
+
+  function hideActivity(delay = 500) {
+    if (!activityEl) return;
+    if (activityHideTimer) clearTimeout(activityHideTimer);
+    activityHideTimer = setTimeout(() => {
+      activityEl?.remove();
+      activityEl = null;
+      activityHideTimer = null;
+    }, motionDelay(delay));
+  }
+
+  function renderTypingPreview(text, active = false) {
+    if (!typingPreviewEl) return;
+    typingPreviewEl.classList.toggle('typing-active', active);
+    typingPreviewEl.classList.toggle('typing-preparing', !active);
+    typingPreviewEl.dataset.phase = active ? 'active' : 'preparing';
+    const textEl = document.createElement('span');
+    textEl.className = 'p-text';
+    // Do not mask or redact values: the owner explicitly wants the complete
+    // value visible in the preview (CSS ellipsis still handles very long text).
+    textEl.textContent = String(text);
+    typingPreviewEl.replaceChildren(textEl);
+    scheduleOverlayReposition();
+  }
+
+  function positionTypingPreview() {
+    const preview = typingPreviewEl;
+    const anchor = typingPreviewAnchor;
+    if (!preview || !preview.isConnected || !anchor || !anchor.isConnected) return;
+    const rect = anchor.getBoundingClientRect();
+    if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return;
+    const margin = 10;
+    const gap = 10;
+    const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+    const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+    const availableWidth = Math.max(1, viewportWidth - margin * 2);
+    const width = Math.min(preview.offsetWidth || 320, availableWidth);
+    const height = preview.offsetHeight || 42;
+    const anchorX = rect.left + rect.width / 2;
+    const roomAbove = rect.top - margin;
+    const roomBelow = viewportHeight - rect.bottom - margin;
+    const above = roomAbove >= height + gap || roomAbove >= roomBelow;
+    const unclampedTop = above ? rect.top - height - gap : rect.bottom + gap;
+    const topLimit = Math.max(margin, viewportHeight - height - margin);
+    const leftLimit = Math.max(margin, viewportWidth - width - margin);
+    const top = Math.max(margin, Math.min(topLimit, unclampedTop));
+    const left = Math.max(margin, Math.min(leftLimit, anchorX - width / 2));
+    const arrowLeft = Math.max(6, Math.min(Math.max(6, width - 18), anchorX - left - 6));
+    preview.classList.toggle('below', !above);
+    preview.style.setProperty('--attk-arrow-left', arrowLeft + 'px');
+    preview.style.left = left + 'px';
+    preview.style.top = top + 'px';
+  }
+
+  function showTypingPreview(el, text) {
+    ensureStyle();
+    if (typingPreviewHideTimer) clearTimeout(typingPreviewHideTimer);
+    typingPreviewAnchor = el;
+    if (!typingPreviewEl || !typingPreviewEl.isConnected) {
+      typingPreviewEl = document.createElement('div');
+      typingPreviewEl.id = overlayId('typing-preview');
+      typingPreviewEl.setAttribute('data-attk-role', 'typing-preview');
+      typingPreviewEl.setAttribute('data-attk-internal', 'true');
+      typingPreviewEl.setAttribute('role', 'status');
+      typingPreviewEl.setAttribute('aria-live', 'polite');
+      typingPreviewEl.setAttribute('aria-atomic', 'true');
+      (document.body || document.documentElement).appendChild(typingPreviewEl);
+    }
+    renderTypingPreview(text, false);
+    positionTypingPreview();
+  }
+
+  function showTypingInProgress(text) {
+    if (!typingPreviewEl) return;
+    renderTypingPreview(String(text), true);
+  }
+
+  function hideTypingPreview(delay = 650) {
+    if (!typingPreviewEl) return;
+    if (typingPreviewHideTimer) clearTimeout(typingPreviewHideTimer);
+    typingPreviewHideTimer = setTimeout(() => {
+      typingPreviewEl?.remove();
+      typingPreviewEl = null;
+      typingPreviewAnchor = null;
+      typingPreviewHideTimer = null;
+    }, motionDelay(delay));
+  }
+
+  function repositionInputIndicator() {
+    const current = activeInputTagEl;
+    if (!current?.el?.isConnected || !current.tag?.isConnected) return;
+    const rect = current.el.getBoundingClientRect();
+    const tagRect = current.tag.getBoundingClientRect();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 1;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 1;
+    current.tag.style.left = Math.max(4, Math.min(vw - tagRect.width - 4, rect.left)) + 'px';
+    current.tag.style.top = Math.max(2, Math.min(vh - tagRect.height - 2, rect.top - tagRect.height - 4)) + 'px';
+  }
+
+  function repositionSOM() {
+    if (!somActive) return;
+    somEls = somEls.filter(marker => {
+      const el = marker.__attkAnchor;
+      if (!el?.isConnected) { marker.remove(); return false; }
+      const rect = el.getBoundingClientRect();
+      if (!rect.width || !rect.height) { marker.style.display = 'none'; return true; }
+      marker.style.display = '';
+      marker.style.left = (rect.left + Math.min(18, rect.width / 2)) + 'px';
+      marker.style.top = (rect.top + 8) + 'px';
+      return true;
+    });
+  }
+
+  function scheduleOverlayReposition() {
+    if (overlayRepositionFrame) return;
+    const run = () => {
+      overlayRepositionFrame = null;
+      positionTypingPreview();
+      repositionInputIndicator();
+      repositionSOM();
+    };
+    if (typeof requestAnimationFrame === 'function') overlayRepositionFrame = requestAnimationFrame(run);
+    else run();
   }
 
   function scheduleCursorFade(delay = 1200) {
@@ -233,9 +532,11 @@
       return cursorEl;
     }
     cursorEl = document.createElement('div');
-    cursorEl.id = '__attk-cursor';
+    cursorEl.id = overlayId('cursor');
+    cursorEl.setAttribute('data-attk-role', 'cursor');
     cursorEl.setAttribute('data-attk-internal', 'true');
-    cursorEl.innerHTML = `<svg class="c-arrow" viewBox="0 0 28 28" fill="none"><path d="M2 2 L2 22 L9 16 L12 24 L15 23 L11.5 15 L21 15 Z" fill="#10b981" stroke="white" stroke-width="1.6" stroke-linejoin="round"/><circle class="c-dot" cx="2" cy="2" r="0"/></svg>`;
+    cursorEl.setAttribute('aria-hidden', 'true');
+    cursorEl.innerHTML = `<svg class="c-arrow" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M2 2 L2 22 L9 16 L12 24 L15 23 L11.5 15 L21 15 Z" fill="#67e8b0" stroke="white" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
     cursorEl.style.left = '-100px';
     cursorEl.style.top = '-100px';
     (document.body || document.documentElement).appendChild(cursorEl);
@@ -243,9 +544,12 @@
   }
 
   function ripple(x, y) {
+    if (reducedMotion()) return;
     const r = document.createElement('div');
-    r.id = '__attk-ripple';
+    r.id = overlayId('ripple');
+    r.setAttribute('data-attk-role', 'ripple');
     r.setAttribute('data-attk-internal', 'true');
+    r.setAttribute('aria-hidden', 'true');
     r.style.left = x + 'px';
     r.style.top = y + 'px';
     (document.body || document.documentElement).appendChild(r);
@@ -272,9 +576,8 @@
 
   function isInternalNode(node) {
     if (!node || !node.nodeType) return false;
-    if (node.id && (node.id === '__attk-cursor' || node.id === '__attk-ripple' || node.id === '__attk-style')) return true;
-    if (node.classList && (node.classList.contains('__attk-som') || node.classList.contains('__attk-hl'))) return true;
     if (node.hasAttribute && node.hasAttribute('data-attk-internal')) return true;
+    if (node.classList && (node.classList.contains('__attk-som') || node.classList.contains('__attk-hl'))) return true;
     return false;
   }
 
@@ -295,6 +598,7 @@
   }
 
   function waitForScrollEnd(el, timeout = 900) {
+    if (reducedMotion()) return Promise.resolve();
     return new Promise(resolve => {
       let lastRect = el ? el.getBoundingClientRect() : null;
       let stableFrames = 0;
@@ -368,14 +672,18 @@
 
   async function glideTo(x, y, dur = 520) {
     const c = ensureCursor();
+    // The SVG path's actual tip is (2, 2), so position the element by its
+    // hotspot rather than making the visible arrow miss the event point.
+    const targetLeft = x - CURSOR_HOTSPOT.x;
+    const targetTop = y - CURSOR_HOTSPOT.y;
     const curLeft = parseFloat(c.style.left) || 0;
     const curTop = parseFloat(c.style.top) || 0;
-    const dist = Math.hypot(x - curLeft, y - curTop);
-    const d = Math.min(900, Math.max(dur, Math.round(dist * 0.75)));
+    const dist = Math.hypot(targetLeft - curLeft, targetTop - curTop);
+    const d = reducedMotion() ? 0 : Math.min(900, Math.max(dur, Math.round(dist * 0.75)));
     c.style.transitionDuration = d + 'ms';
-    c.style.left = x + 'px';
-    c.style.top = y + 'px';
-    await sleep(d + 30);
+    c.style.left = targetLeft + 'px';
+    c.style.top = targetTop + 'px';
+    if (d) await sleep(d + 30);
   }
 
   // --- event dispatching ---
@@ -458,7 +766,7 @@
     if (!el) throw new Error('Element not found: ' + selectorOrEl);
 
     if (scroll) {
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: scrollBehavior() });
       await waitForScrollEnd(el);
     }
 
@@ -466,7 +774,7 @@
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const vw = window.innerWidth || document.documentElement.clientWidth;
     if (center.rect.top < 0 || center.rect.bottom > vh || center.rect.left < 0 || center.rect.right > vw) {
-      el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+      el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: scrollBehavior() });
       await waitForScrollEnd(el);
       center = getCenter(el);
     }
@@ -477,7 +785,7 @@
       const c = ensureCursor();
       c.classList.add('clicking');
       ripple(center.x, center.y);
-      await sleep(80);
+      await sleep(motionDelay(80));
 
       const target = resolveTargetAt(center.x, center.y, el);
 
@@ -485,7 +793,7 @@
         firePointerAndMouse(target, 'mouseover', center.x, center.y, 2);
         firePointerAndMouse(target, 'mousemove', center.x, center.y, 2);
         firePointerAndMouse(target, 'mousedown', center.x, center.y, 2);
-        await sleep(50);
+        await sleep(motionDelay(50));
         firePointerAndMouse(target, 'mouseup', center.x, center.y, 2);
         firePointerAndMouse(target, 'contextmenu', center.x, center.y, 2);
       } else if (clickKind === 'double') {
@@ -494,7 +802,7 @@
         firePointerAndMouse(target, 'mousedown', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'mouseup', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'click', center.x, center.y, 0, 1);
-        await sleep(60);
+        await sleep(motionDelay(60));
         firePointerAndMouse(target, 'mousedown', center.x, center.y, 0, 2);
         firePointerAndMouse(target, 'mouseup', center.x, center.y, 0, 2);
         firePointerAndMouse(target, 'click', center.x, center.y, 0, 2);
@@ -503,15 +811,15 @@
         firePointerAndMouse(target, 'mouseover', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'mousemove', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'mousedown', center.x, center.y, 0, 1);
-        await sleep(50);
+        await sleep(motionDelay(50));
         firePointerAndMouse(target, 'mouseup', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'click', center.x, center.y, 0, 1);
         try { if (typeof el.focus === 'function') el.focus({ preventScroll: true }); } catch {}
       }
 
-      await sleep(100);
+      await sleep(motionDelay(100));
       c.classList.remove('clicking');
-      await sleep(120);
+      await sleep(motionDelay(120));
 
       return {
         ok: true,
@@ -554,23 +862,28 @@
     }
   }
 
-  let activeInputTagEl = null;
-
   function showActiveInputIndicator(el) {
     removeActiveInputIndicator();
     if (!el || isInternalNode(el)) return;
     try {
       el.classList.add('__attk-input-focused');
-      const r = el.getBoundingClientRect();
       const tag = document.createElement('div');
       tag.className = '__attk-input-tag';
       tag.setAttribute('data-attk-internal', 'true');
+      tag.setAttribute('role', 'status');
+      tag.setAttribute('aria-live', 'polite');
       const label = el.getAttribute('placeholder') || el.name || el.id || el.tagName.toLowerCase();
       tag.textContent = '✏️ ' + (label.length > 25 ? label.slice(0, 22) + '...' : label);
-      tag.style.left = Math.max(4, r.left) + 'px';
-      tag.style.top = Math.max(2, r.top - 20) + 'px';
       (document.body || document.documentElement).appendChild(tag);
       activeInputTagEl = { el, tag };
+      if (typeof ResizeObserver === 'function') {
+        try {
+          overlayResizeObserver?.disconnect();
+          overlayResizeObserver = new ResizeObserver(scheduleOverlayReposition);
+          overlayResizeObserver.observe(el);
+        } catch {}
+      }
+      scheduleOverlayReposition();
     } catch {}
   }
 
@@ -578,10 +891,12 @@
     if (activeInputTagEl) {
       const { el, tag } = activeInputTagEl;
       activeInputTagEl = null;
+      overlayResizeObserver?.disconnect();
+      overlayResizeObserver = null;
       setTimeout(() => {
         try { el?.classList.remove('__attk-input-focused'); } catch {}
         try { tag?.remove(); } catch {}
-      }, delay);
+      }, motionDelay(delay));
     }
   }
 
@@ -598,16 +913,19 @@
     el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, code: getEventCode(ch), bubbles: true, cancelable: true, composed: true }));
   }
 
-  async function doType(selector, text, opts = {}) {
+  async function doTypeExclusive(selector, text, opts = {}) {
+    const requestedText = String(text ?? '');
     let el = typeof selector === 'string' ? queryDeep(selector) : selector;
     if (!el) throw new Error('Element not found: ' + selector);
 
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: scrollBehavior() });
     await waitForScrollEnd(el);
     const { x, y } = getCenter(el);
 
     showHighlight(el);
     showActiveInputIndicator(el);
+    showTypingPreview(el, requestedText);
+    await sleep(motionDelay(400));
     try {
       await glideTo(x, y, 250);
       const target = resolveTargetAt(x, y, el);
@@ -616,40 +934,44 @@
       firePointerAndMouse(target, 'mouseup', x, y);
       firePointerAndMouse(target, 'click', x, y);
       try { if (typeof el.focus === 'function') el.focus(); } catch {}
-      await sleep(50);
+      await sleep(motionDelay(50));
+      // "Preparing" ends only once the target is focused and mutation is next.
+      const perChar = opts.perChar !== false;
+      showTypingInProgress(perChar ? '' : requestedText);
+      showActivity('Typing');
 
       const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '';
 
       if (el.tagName === 'SELECT') {
         let matched = false;
         for (const opt of el.options) {
-          if (opt.value === text || opt.text === text || opt.text.trim().toLowerCase() === text.trim().toLowerCase()) {
+          if (opt.value === requestedText || opt.text === requestedText || opt.text.trim().toLowerCase() === requestedText.trim().toLowerCase()) {
             el.value = opt.value;
             matched = true;
             break;
           }
         }
-        if (!matched) el.value = text;
+        if (!matched) el.value = requestedText;
         el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } else if (isContentEditable) {
         el.focus();
         // Dispatch keydown for realism
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: text.length === 1 ? text : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: requestedText.length === 1 ? requestedText : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
 
         const beforeEvent = new InputEvent('beforeinput', {
           bubbles: true,
           cancelable: true,
           composed: true,
           inputType: 'insertText',
-          data: text
+          data: requestedText
         });
         const notCancelled = el.dispatchEvent(beforeEvent);
 
         if (notCancelled) {
           let inserted = false;
           try {
-            inserted = document.execCommand('insertText', false, text);
+            inserted = document.execCommand('insertText', false, requestedText);
           } catch {}
 
           if (!inserted) {
@@ -660,7 +982,7 @@
               sel.removeAllRanges();
               sel.addRange(range);
               range.deleteContents();
-              const textNode = document.createTextNode(text);
+              const textNode = document.createTextNode(requestedText);
               range.insertNode(textNode);
               range.setStartAfter(textNode);
               range.setEndAfter(textNode);
@@ -668,9 +990,9 @@
               sel.addRange(range);
             }
           }
-          el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }));
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: requestedText }));
         }
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: text.length === 1 ? text : 'Unidentified', bubbles: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: requestedText.length === 1 ? requestedText : 'Unidentified', bubbles: true, composed: true }));
       } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
         el.focus();
 
@@ -680,14 +1002,17 @@
           el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'deleteContentBackward' }));
         }
 
-        if (opts.perChar && !el.readOnly) {
-          for (const ch of text) {
+        if (perChar && !el.readOnly) {
+          let typed = '';
+          for (const ch of requestedText) {
             typeCharEvents(el, ch);
-            await sleep(18); // human-ish cadence; keeps autocomplete handlers happy
+            typed += ch;
+            showTypingInProgress(typed);
+            if (!reducedMotion()) await sleep(18); // human-ish cadence; keeps autocomplete handlers happy
           }
         } else {
         // 1. keydown
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: text.length === 1 ? text : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: requestedText.length === 1 ? requestedText : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
 
         // 2. beforeinput (BEFORE value mutation per W3C specification)
         const beforeEvent = new InputEvent('beforeinput', {
@@ -701,25 +1026,42 @@
 
         // 3. Mutate value with framework prototype bypass
         if (notCancelled) {
-          setNativeValue(el, text);
+          setNativeValue(el, requestedText);
           // 4. input event
-          el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }));
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: requestedText }));
         }
 
         // 5. keyup & change
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: text.length === 1 ? text : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: requestedText.length === 1 ? requestedText : 'Unidentified', bubbles: true, cancelable: true, composed: true }));
         }
         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } else {
         throw new Error('Element is not typable: <' + el.tagName?.toLowerCase() + '>');
       }
 
-      return { ok: true, textLength: text.length };
+      return { ok: true, textLength: requestedText.length };
     } finally {
+      hideActivity(500);
+      removeActiveInputIndicator(1400);
       clearHighlight();
+      hideTypingPreview(650);
       scheduleCursorFade(1200);
       // Value properties are not observable by MutationObserver.
       invalidateDomCaches();
+    }
+  }
+
+  // Serialize typing operations so overlapping MCP messages cannot interleave
+  // keystrokes, indicators, previews, or cleanup timers.
+  async function doType(selector, text, opts = {}) {
+    const previous = typingQueue;
+    let release;
+    typingQueue = new Promise(resolve => { release = resolve; });
+    await previous;
+    try {
+      return await doTypeExclusive(selector, text, opts);
+    } finally {
+      release();
     }
   }
 
@@ -802,7 +1144,9 @@
       const n = document.createElement('div');
       n.className = '__attk-som';
       n.setAttribute('data-attk-internal', 'true');
+      n.setAttribute('aria-hidden', 'true');
       n.textContent = i + 1;
+      n.__attkAnchor = el;
       n.style.left = (r.left + Math.min(18, r.width / 2)) + 'px';
       n.style.top = (r.top + 8) + 'px';
       const sel = cssPath(el);
@@ -812,6 +1156,7 @@
       return n;
     });
     somActive = true;
+    scheduleOverlayReposition();
     return { ok: true, active: true, count: els.length };
   }
 
@@ -819,7 +1164,7 @@
   async function doScroll(direction = 'down', amount = 400) {
     const dx = { left: -amount, right: amount }[direction] ?? 0;
     const dy = { up: -amount, down: amount }[direction] ?? 0;
-    window.scrollBy({ left: dx, top: dy, behavior: 'smooth' });
+    window.scrollBy({ left: dx, top: dy, behavior: scrollBehavior() });
     await waitForScrollEnd(null, 600);
     invalidateLayoutCaches();
     return { ok: true, scrollY: window.scrollY, scrollX: window.scrollX };
@@ -1179,7 +1524,7 @@
     if (src.from_selector) {
       const el = queryDeep(src.from_selector);
       if (!el) throw new Error('Not found: ' + src.from_selector);
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: scrollBehavior() });
       await waitForScrollEnd(el);
       return getCenter(el);
     }
@@ -1196,7 +1541,7 @@
     if (msg.to_selector) {
       const el2 = queryDeep(msg.to_selector);
       if (!el2) throw new Error('Not found: ' + msg.to_selector);
-      el2.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+      el2.scrollIntoView({ block: 'center', inline: 'center', behavior: scrollBehavior() });
       await waitForScrollEnd(el2);
       const c2 = getCenter(el2);
       toX = c2.x;
@@ -1237,15 +1582,15 @@
       c.style.transitionDuration = '0ms';
 
       const dur = msg.duration ?? 700;
-      const steps = Math.max(8, Math.min(35, Math.round(dur / 25)));
+      const steps = reducedMotion() ? 1 : Math.max(8, Math.min(35, Math.round(dur / 25)));
 
       for (let i = 1; i <= steps; i++) {
         const t = i / steps;
         const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; // easeInOutQuad
         const x = from.x + (toX - from.x) * ease;
         const y = from.y + (toY - from.y) * ease;
-        c.style.left = x + 'px';
-        c.style.top = y + 'px';
+        c.style.left = (x - CURSOR_HOTSPOT.x) + 'px';
+        c.style.top = (y - CURSOR_HOTSPOT.y) + 'px';
 
         const over = resolveTargetAt(x, y, null);
         if (over) {
@@ -1263,7 +1608,7 @@
             } catch {}
           }
         }
-        await sleep(dur / steps);
+        if (!reducedMotion()) await sleep(dur / steps);
       }
 
       // Re-enable smooth transition
@@ -1293,7 +1638,7 @@
       firePointerAndMouse(endTarget, 'mouseup', toX, toY);
       ripple(toX, toY);
       c.classList.remove('clicking');
-      await sleep(100);
+      await sleep(motionDelay(100));
 
       return { ok: true, from, to: { x: toX, y: toY } };
     } finally {
@@ -1355,7 +1700,7 @@
           const c = ensureCursor();
           c.classList.add('clicking');
           ripple(x, y);
-          await sleep(80);
+          await sleep(motionDelay(80));
           const rawTarget = document.elementFromPoint(x, y);
           if (!rawTarget || isInternalNode(rawTarget)) throw new Error(`No clickable element at (${x}, ${y})`);
           const target = resolveTargetAt(x, y, null);
@@ -1367,7 +1712,7 @@
             firePointerAndMouse(target, 'mouseover', x, y, btn, detail);
             firePointerAndMouse(target, 'mousemove', x, y, btn, detail);
             firePointerAndMouse(target, 'mousedown', x, y, btn, detail);
-            await sleep(50);
+            await sleep(motionDelay(50));
             firePointerAndMouse(target, 'mouseup', x, y, btn, detail);
             if (msg.kind === 'right') {
               firePointerAndMouse(target, 'contextmenu', x, y, 2);
@@ -1388,7 +1733,7 @@
         }
 
         if (msg.type === 'CURSOR_TYPE') {
-          const res = await doType(msg.selector, msg.text, { clear: msg.clear === true, perChar: msg.perChar === true });
+          const res = await doType(msg.selector, msg.text, { clear: msg.clear === true, perChar: msg.perChar !== false });
           return sendResponse(res);
         }
 
@@ -1418,7 +1763,7 @@
           let el = snapId && window.__attk_snapMap?.get(snapId)?.el;
           if (!el && msg.selector) el = queryDeep(msg.selector);
           if (!el) throw new Error('Element not found');
-          el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+          el.scrollIntoView({ block: 'center', inline: 'center', behavior: scrollBehavior() });
           await waitForScrollEnd(el);
           invalidateLayoutCaches();
           return sendResponse({

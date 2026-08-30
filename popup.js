@@ -125,14 +125,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Create New Dedicated Worker Tab
-  document.getElementById('btn-create-worker').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'new_tab', url: 'https://google.com', active: false } }, () => {
+  // Group the current tab for visual organization. This never changes the
+  // locked automation target.
+  document.getElementById('btn-add-group').addEventListener('click', async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+      setStatus('No active tab found');
+      return;
+    }
+    chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'add_to_group' } }, () => {
       if (chrome.runtime.lastError) {
         setStatus('Error: ' + chrome.runtime.lastError.message);
         return;
       }
-      setStatus('Created worker tab');
+      setStatus('Added and selected current tab');
       updateUI();
     });
   });

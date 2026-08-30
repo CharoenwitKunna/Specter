@@ -93,6 +93,8 @@ curl -X POST http://127.0.0.1:8765/tool \
 ## Notes
 
 - Target tab is persisted across service-worker suspensions (`chrome.storage.session`).
-- New tabs open silently in the Specter group — your focused tab never changes.
+- Specter owns every tab in the green `👻 Specter` tab group. Actions never fall back to an unrelated active tab, and tabs outside the group are hidden from `tab_list`.
+- When a tab is locked, it is exclusive: Specter cannot switch to or close any other tab, even one in the Specter group. Unlock first to choose another owned tab.
+- Use **Add current tab to group** to add a tab. If no tab is locked, it becomes the target; an existing lock remains exclusive.
 - Restricted pages (`chrome://`, `edge://`) are rejected cleanly.
 - Content scripts inject on demand (PING-fail fallback) instead of every page you browse.
