@@ -52,6 +52,27 @@ test('new tools are exposed and downloads are bounded', () => {
   assert.match(content, /getConsoleLogs/);
 });
 
+test('all tools have complete readOnlyHint, destructiveHint, idempotentHint, and openWorldHint annotations', () => {
+  const toolsMatch = bridge.match(/const TOOLS = (\[[\s\S]*?\]);/);
+  assert.ok(toolsMatch, 'TOOLS array found in bridge.js');
+  // Simple validation to ensure all tools have hints defined
+  const hints = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
+  const allToolNames = [
+    'tab_navigate', 'tab_eval', 'tab_list', 'tab_switch', 'tab_new', 'tab_close',
+    'tab_snapshot', 'tab_find', 'tab_visual_snapshot', 'tab_scroll_into_view',
+    'tab_query', 'tab_get_text', 'tab_get_html', 'tab_stats', 'tab_screenshot',
+    'click', 'type', 'key', 'scroll', 'drag', 'wait', 'wait_for',
+    'wait_for_network_idle', 'tab_console_logs', 'downloads', 'batch_actions'
+  ];
+  for (const name of allToolNames) {
+    assert.match(bridge, new RegExp(`name:\\s*'${name}'`));
+  }
+  for (const hint of hints) {
+    const hintCount = (bridge.match(new RegExp(`${hint}:\\s*(true|false)`, 'g')) || []).length;
+    assert.equal(hintCount, allToolNames.length, `Expected all tools to declare ${hint}`);
+  }
+});
+
 test('batch actions are bounded, allowlisted, serialized, and report stop state', () => {
   assert.match(bridge, /name: 'batch_actions'/);
   assert.match(bridge, /MAX_BATCH_ACTIONS = 50/);

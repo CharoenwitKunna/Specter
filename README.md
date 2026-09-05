@@ -1,5 +1,7 @@
 # Specter
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/charoenwitkunna-specter-tc1rph)](https://m8ven.ai/mcp/charoenwitkunna-specter-tc1rph)
+
 Ghost-cursor browser automation for AI agents. Chrome extension + MCP server that lets any LLM see and drive a real browser tab — with a visible ghost cursor, silent background execution, and zero focus stealing.
 
 ```
