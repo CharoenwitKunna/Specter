@@ -3,7 +3,7 @@
   "name": "Specter",
   "version": "1.3.0",
   "description": "Ghost-cursor browser automation & MCP bridge for AI agents.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs", "alarms", "tabGroups", "downloads"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "alarms", "tabGroups"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "Specter",

@@ -1617,27 +1617,6 @@
     } catch (e) { return { ok: false, error: e.message }; }
   }
 
-  function doQuery(sel) {
-    try {
-      const els = queryAllDeep(document, sel).filter(el => !isInternalNode(el));
-      if (!els.length) return { ok: true, count: 0, items: [] };
-      const inspect = inspectionContext();
-      return {
-        ok: true,
-        count: els.length,
-        items: els.slice(0, 20).map((el, i) => ({
-          index: i,
-          tag: el.tagName ? el.tagName.toLowerCase() : '',
-          text: (el.innerText || el.value || el.textContent || '').trim().slice(0, 120),
-          rect: toPlainRect(inspect.rect(el)),
-          selector: inspect.selector(el)
-        }))
-      };
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  }
-
   // --- shadow DOM & iframe tree walker ---
   // Use an explicit worklist and visited set instead of recursive generators.
   // Besides avoiding repeated work for shared/odd DOM implementations, this
@@ -2132,8 +2111,9 @@
           return sendResponse(doKey(msg.key, msg.selector, msg.modifiers));
         }
 
-        if (msg.type === 'CURSOR_QUERY') {
-          return sendResponse(doQuery(msg.selector));
+        if (msg.type === 'WAIT_FOR_SELECTOR') {
+          const el = queryDeep(msg.selector);
+          return sendResponse({ ok: true, found: Boolean(el && isElementVisible(el)) });
         }
 
         if (msg.type === 'CURSOR_FIND') {

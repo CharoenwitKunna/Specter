@@ -64,7 +64,6 @@ content.js (Injected into active/target tab)
 | `tab_list` | — | List all open tabs |
 | `tab_switch` | `tabId` | Switch target tab focus |
 | `tab_snapshot` | — | Extract numbered DOM elements with coordinates and selectors |
-| `tab_query` | `selector` | Query specific elements by CSS |
 | `tab_eval` | `code` | Execute JavaScript in target tab |
 | `tab_get_text` | `selector` (optional) | Extract text content |
 | `tab_get_html` | `selector` (optional) | Extract raw HTML |

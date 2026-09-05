@@ -39,13 +39,11 @@ test('DOM inspection caches are short-lived and traversal is bounded', () => {
   assert.match(content, /inspectionContext/);
 });
 
-test('new tools are exposed and downloads are bounded', () => {
+test('new tools are exposed', () => {
   assert.match(bridge, /name: 'tab_find'/);
   assert.match(bridge, /name: 'tab_visual_snapshot'/);
   assert.match(bridge, /name: 'wait_for_network_idle'/);
   assert.match(bridge, /name: 'tab_console_logs'/);
-  assert.match(bridge, /name: 'downloads'/);
-  assert.match(background, /Math\.min\(100, Math\.max\(1, job\.limit/);
   assert.match(background, /case 'wait_for_network_idle'/);
   assert.match(background, /case 'console_logs'/);
   assert.match(content, /waitForNetworkIdle/);
@@ -60,9 +58,9 @@ test('all tools have complete readOnlyHint, destructiveHint, idempotentHint, and
   const allToolNames = [
     'tab_navigate', 'tab_eval', 'tab_list', 'tab_switch', 'tab_new', 'tab_close',
     'tab_snapshot', 'tab_find', 'tab_visual_snapshot', 'tab_scroll_into_view',
-    'tab_query', 'tab_get_text', 'tab_get_html', 'tab_stats', 'tab_screenshot',
+    'tab_get_text', 'tab_get_html', 'tab_stats', 'tab_screenshot',
     'click', 'type', 'key', 'scroll', 'drag', 'wait', 'wait_for',
-    'wait_for_network_idle', 'tab_console_logs', 'downloads', 'batch_actions'
+    'wait_for_network_idle', 'tab_console_logs', 'batch_actions'
   ];
   for (const name of allToolNames) {
     assert.match(bridge, new RegExp(`name:\\s*'${name}'`));

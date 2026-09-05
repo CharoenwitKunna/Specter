@@ -507,9 +507,9 @@ async function waitForSelector(selector, timeoutMs = 10000, frameId) {
   let lastError = null;
   while (Date.now() < deadline) {
     try {
-      const res = await sendToActive({ type: 'CURSOR_QUERY', selector, frameId });
-      if (res?.ok && res.count > 0) {
-        return { ok: true, found: true, count: res.count, waitedMs: Math.min(timeoutMs, 30000) - (deadline - Date.now()) };
+      const res = await sendToActive({ type: 'WAIT_FOR_SELECTOR', selector, frameId });
+      if (res?.ok && res.found) {
+        return { ok: true, found: true, waitedMs: Math.min(timeoutMs, 30000) - (deadline - Date.now()) };
       }
       lastError = null;
     } catch (e) { lastError = e.message; }
@@ -696,17 +696,8 @@ async function handleJob(job) {
       case 'get_text': result = await sendToActive({ type: 'GET_TEXT', selector: job.selector, frameId: job.frameId }); break;
       case 'get_html': result = await sendToActive({ type: 'GET_HTML', selector: job.selector, frameId: job.frameId }); break;
       case 'get_stats': result = await sendToActive({ type: 'GET_STATS', frameId: job.frameId }); break;
-      case 'query': result = await sendToActive({ type: 'CURSOR_QUERY', selector: job.selector, frameId: job.frameId }); break;
       case 'snapshot': result = await sendToActive({ type: 'CURSOR_SNAPSHOT', max: job.max ?? 80, inViewportOnly: job.inViewportOnly, frameId: job.frameId }); break;
       case 'scroll_into_view': result = await sendToActive({ type: 'CURSOR_SCROLL_INTO_VIEW', selector: job.selector, element: job.element, frameId: job.frameId }); break;
-      case 'downloads': {
-        if (!chrome.downloads) throw new Error('Downloads permission is not available; reload the extension after updating the manifest');
-        const query = { limit: Math.min(100, Math.max(1, job.limit ?? 20)), orderBy: ['-startTime'] };
-        if (job.state) query.state = job.state;
-        const items = await chrome.downloads.search(query);
-        result = { ok: true, downloads: items.map(d => ({ id: d.id, url: d.url, filename: d.filename, state: d.state, progress: d.bytesReceived, totalBytes: d.totalBytes, startTime: d.startTime, endTime: d.endTime, error: d.error || null })) };
-        break;
-      }
       case 'visual_snapshot': {
         const tab = await getTargetTab();
         if (!tab?.id) throw new Error('No target tab found for visual snapshot');

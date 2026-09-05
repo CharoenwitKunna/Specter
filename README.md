@@ -30,11 +30,9 @@ Ghost-cursor browser automation for AI agents. Chrome extension + MCP server tha
 | `tab_snapshot` | Structured element map: ids, selectors, rects, `in_viewport` flag |
 | `tab_find` | Find visible elements by text, accessible label, placeholder, title, or role |
 | `tab_visual_snapshot` | Screenshot plus semantic element metadata for visual fallback |
-| `tab_query` | CSS query with rects and generated selectors |
 | `tab_eval` | Run JavaScript in the page (requires explicit `allowEval: true` consent) |
 | `tab_get_text` / `tab_get_html` / `tab_stats` | Page content extraction |
 | `tab_screenshot` | Visible-tab capture (MCP image block for vision models) |
-| `downloads` | List bounded recent download metadata and status |
 | `tab_scroll_into_view` | Scroll element into view by selector or snapshot id |
 | `click` | By selector, snapshot id, or x/y — right/double supported |
 | `type` / `key` | Framework-safe typing (React/Vue setter bypass), key events |
@@ -49,7 +47,7 @@ Selectors pierce open shadow roots; elements below the fold are auto-scrolled in
 
 ### Batch actions
 
-`batch_actions` accepts an ordered `actions` array whose entries use the individual tool shape, for example `{ "tool": "click", "args": { "selector": "button.next" } }`. It supports inspection and interaction tools (`tab_snapshot`, `tab_find`, `tab_query`, `tab_get_text`, `tab_get_html`, `tab_stats`, `tab_scroll_into_view`, `click`, `type`, `key`, `scroll`, `drag`, `wait`, and `wait_for`). Every action runs serially against the persisted target tab and keeps its `frameId` when supplied. Tab switching/creation/closing, navigation, screenshots, downloads, and unrestricted `tab_eval` are intentionally rejected inside a batch. Results contain an entry for every action plus `stopped`/`stoppedAt`; actions not reached after a stop are marked `skipped:true`. Set `stopOnError:false` (or `continueOnError:true`) to run all actions after failures.
+`batch_actions` accepts an ordered `actions` array whose entries use the individual tool shape, for example `{ "tool": "click", "args": { "selector": "button.next" } }`. It supports inspection and interaction tools (`tab_snapshot`, `tab_find`, `tab_get_text`, `tab_get_html`, `tab_stats`, `tab_scroll_into_view`, `click`, `type`, `key`, `scroll`, `drag`, `wait`, and `wait_for`). Every action runs serially against the persisted target tab and keeps its `frameId` when supplied. Tab switching/creation/closing, navigation, screenshots, and unrestricted `tab_eval` are intentionally rejected inside a batch. Results contain an entry for every action plus `stopped`/`stoppedAt`; actions not reached after a stop are marked `skipped:true`. Set `stopOnError:false` (or `continueOnError:true`) to run all actions after failures.
 
 ```json
 {"tool":"batch_actions","args":{"stopOnError":true,"actions":[

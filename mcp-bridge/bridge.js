@@ -71,7 +71,6 @@ const TOOLS = [
   { name: 'tab_find', description: 'Find visible elements by human text, ARIA label, placeholder, title, or role; use before clicking dynamic pages', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { text: { type: 'string' }, label: { type: 'string' }, role: { type: 'string' }, max: { type: 'number' }, frameId: { type: 'number' } } } },
   { name: 'tab_visual_snapshot', description: 'Capture a screenshot together with the current semantic element snapshot for visual fallback', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { format: { type: 'string', enum: ['png', 'jpeg'] }, quality: { type: 'number', description: 'JPEG quality 30-90 (default 60)' }, max: { type: 'number' }, frameId: { type: 'number', description: 'Optional Chrome frame ID for the semantic snapshot' } } } },
   { name: 'tab_scroll_into_view', description: 'Scroll an element into view by selector or snapshot ID', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, element: { type: 'number' }, frameId: { type: 'number' } } } },
-  { name: 'tab_query', description: 'Query elements by CSS selector on the active tab', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, frameId: { type: 'number' } }, required: ['selector'] } },
   { name: 'tab_get_text', description: 'Get visible text of the active tab', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, frameId: { type: 'number' } } } },
   { name: 'tab_get_html', description: 'Get HTML of the active tab (truncated)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, frameId: { type: 'number' } } } },
   { name: 'tab_stats', description: 'Get page stats (links/images/headings/word count)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { frameId: { type: 'number' } } } },
@@ -85,7 +84,6 @@ const TOOLS = [
   { name: 'wait_for', description: 'Wait until an element matching the selector exists in the target tab (polls the DOM)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, timeoutMs: { type: 'number', description: 'Max wait in ms (default 10000, max 30000)' }, frameId: { type: 'number' } }, required: ['selector'] } },
   { name: 'wait_for_network_idle', description: 'Wait until in-flight fetch and XHR network requests settle (zero active requests for idleMs)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { idleMs: { type: 'number', description: 'Consecutive quiet milliseconds required (default 500, max 5000)' }, timeoutMs: { type: 'number', description: 'Maximum total wait time in milliseconds (default 15000, max 60000)' }, frameId: { type: 'number' } } } },
   { name: 'tab_console_logs', description: 'Retrieve buffered browser console logs and uncaught script errors from the target tab', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { types: { type: 'array', items: { type: 'string', enum: ['error', 'warn', 'info', 'uncaught_error', 'unhandled_rejection'] }, description: 'Filter by log types (omitting returns all)' }, clear: { type: 'boolean', description: 'Clear the log buffer after retrieval (default false)' }, frameId: { type: 'number' } } } },
-  { name: 'downloads', description: 'List recent browser downloads and their current states', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { limit: { type: 'number' }, state: { type: 'string', enum: ['in_progress', 'complete', 'interrupted'] } } } },
   { name: 'batch_actions', description: 'Run up to 50 safe browser actions sequentially on the locked target tab. Actions use the same tool names and arguments as the individual tools. Results include one entry per action; by default execution stops after the first failed action (set stopOnError:false or continueOnError:true to continue). Target-changing tools and unrestricted eval are not allowed inside a batch.', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true, inputSchema: { type: 'object', properties: { actions: { type: 'array', minItems: 1, maxItems: 50, description: 'Ordered actions, each {tool:string,args:object}', items: { type: 'object', properties: { tool: { type: 'string' }, action: { type: 'string' }, type: { type: 'string' }, args: { type: 'object' } }, oneOf: [{ required: ['tool'] }, { required: ['action'] }, { required: ['type'] }] } }, stopOnError: { type: 'boolean', default: true, description: 'Stop after the first action whose result has ok:false (default true)' }, continueOnError: { type: 'boolean', description: 'Alias for stopOnError:false' } }, required: ['actions'] } },
 ];
 
@@ -96,7 +94,7 @@ const MAX_BATCH_ACTIONS = 50;
 // kept as individual calls so a batch cannot silently change its target or
 // exfiltrate more data than the caller requested.
 const BATCH_TOOLS = new Set([
-  'tab_snapshot', 'tab_find', 'tab_scroll_into_view', 'tab_query',
+  'tab_snapshot', 'tab_find', 'tab_scroll_into_view',
   'tab_get_text', 'tab_get_html', 'tab_stats', 'click', 'type', 'key',
   'scroll', 'drag', 'wait', 'wait_for', 'wait_for_network_idle', 'tab_console_logs'
 ]);
@@ -132,7 +130,6 @@ function toolToAction(name, args) {
       return { action: 'visual_snapshot', format: args.format || 'jpeg', quality, max: args.max ?? 80, frameId: args.frameId };
     }
     case 'tab_scroll_into_view': return { action: 'scroll_into_view', selector: args.selector, element: args.element, frameId: args.frameId };
-    case 'tab_query': return { action: 'query', selector: args.selector, frameId: args.frameId };
     case 'tab_get_text': return { action: 'get_text', selector: args.selector, frameId: args.frameId };
     case 'tab_get_html': return { action: 'get_html', selector: args.selector, frameId: args.frameId };
     case 'tab_stats': return { action: 'get_stats', frameId: args.frameId };
@@ -230,11 +227,6 @@ function toolToAction(name, args) {
         return { ...normalized, batchTool: tool };
       });
       return { action: 'batch_actions', actions, stopOnError };
-    }
-    case 'downloads': {
-      const limit = args.limit ?? 20;
-      if (!Number.isFinite(limit) || limit < 1 || limit > 100) throw Object.assign(new Error('downloads limit must be 1-100'), { status: 400 });
-      return { action: 'downloads', limit, state: args.state };
     }
     default: throw Object.assign(new Error(`Unknown tool: ${name}`), { status: 404 });
   }

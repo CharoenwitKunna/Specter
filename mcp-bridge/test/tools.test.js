@@ -7,13 +7,13 @@ const root = path.resolve(import.meta.dirname, '..', '..');
 const bridgePath = path.join(root, 'mcp-bridge', 'bridge.js');
 const bridgeCode = fs.readFileSync(bridgePath, 'utf8');
 
-// Test each of the 26 tools by name and ensure valid input mapping / rejection contracts
+// Test each tool by name and ensure valid input mapping / rejection contracts
 const ALL_TOOLS = [
   'tab_navigate', 'tab_eval', 'tab_list', 'tab_switch', 'tab_new', 'tab_close',
   'tab_snapshot', 'tab_find', 'tab_visual_snapshot', 'tab_scroll_into_view',
-  'tab_query', 'tab_get_text', 'tab_get_html', 'tab_stats', 'tab_screenshot',
+  'tab_get_text', 'tab_get_html', 'tab_stats', 'tab_screenshot',
   'click', 'type', 'key', 'scroll', 'drag', 'wait', 'wait_for',
-  'wait_for_network_idle', 'tab_console_logs', 'downloads', 'batch_actions'
+  'wait_for_network_idle', 'tab_console_logs', 'batch_actions'
 ];
 
 test('every tool is explicitly registered in TOOLS with valid schema and annotations', () => {
@@ -23,7 +23,7 @@ test('every tool is explicitly registered in TOOLS with valid schema and annotat
   }
 });
 
-test('toolToAction contract tests for all 26 tools', async () => {
+test('toolToAction contract tests for all tools', async () => {
   // Extract or dynamically verify the action mapping patterns in bridge.js
   const patterns = {
     tab_navigate: /case 'tab_navigate':/,
@@ -36,7 +36,6 @@ test('toolToAction contract tests for all 26 tools', async () => {
     tab_find: /case 'tab_find':/,
     tab_visual_snapshot: /case 'tab_visual_snapshot':/,
     tab_scroll_into_view: /case 'tab_scroll_into_view':/,
-    tab_query: /case 'tab_query':/,
     tab_get_text: /case 'tab_get_text':/,
     tab_get_html: /case 'tab_get_html':/,
     tab_stats: /case 'tab_stats':/,
@@ -50,7 +49,6 @@ test('toolToAction contract tests for all 26 tools', async () => {
     wait_for: /case 'wait_for':/,
     wait_for_network_idle: /case 'wait_for_network_idle':/,
     tab_console_logs: /case 'tab_console_logs':/,
-    downloads: /case 'downloads':/,
     batch_actions: /case 'batch_actions':/
   };
 
