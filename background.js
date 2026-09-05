@@ -692,7 +692,6 @@ async function handleJob(job) {
       case 'type': result = await sendToActive({ type: 'CURSOR_TYPE', selector: job.selector, element: job.element, text: job.text, frameId: job.frameId, clear: job.clear === true, perChar: job.perChar !== false }); break;
       case 'key': result = await sendToActive({ type: 'CURSOR_KEY', key: job.key, selector: job.selector, modifiers: job.modifiers, frameId: job.frameId }); break;
       case 'scroll': result = await sendToActive({ type: 'CURSOR_SCROLL', direction: job.direction || 'down', amount: job.amount ?? 400, frameId: job.frameId }); break;
-      case 'som': result = await sendToActive({ type: 'CURSOR_SOM_TOGGLE', frameId: job.frameId }); break;
       case 'get_text': result = await sendToActive({ type: 'GET_TEXT', selector: job.selector, frameId: job.frameId }); break;
       case 'get_html': result = await sendToActive({ type: 'GET_HTML', selector: job.selector, frameId: job.frameId }); break;
       case 'get_stats': result = await sendToActive({ type: 'GET_STATS', frameId: job.frameId }); break;

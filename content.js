@@ -310,8 +310,6 @@
   let typingPreviewHideTimer = null;
   let typingPreviewAnchor = null;
   let styleEl = null;
-  let somActive = false;
-  let somEls = [];
   let highlightEl = null;
   let activeInputTagEl = null;
   let overlayRepositionFrame = null;
@@ -391,11 +389,18 @@
       } catch {}
     }
     try {
-      window.addEventListener('scroll', () => { invalidateLayoutCaches(); scheduleOverlayReposition(); }, { passive: true });
-      // Capture element-scrolling too; scroll events on nested containers do
-      // not reliably bubble to window but still move snapshot rectangles.
-      document.addEventListener('scroll', () => { invalidateLayoutCaches(); scheduleOverlayReposition(); }, { capture: true, passive: true });
-      window.addEventListener('resize', () => { invalidateLayoutCaches(); scheduleOverlayReposition(); }, { passive: true });
+      window.addEventListener('scroll', () => {
+        invalidateLayoutCaches();
+        if (typingPreviewEl || activeInputTagEl) scheduleOverlayReposition();
+      }, { passive: true });
+      document.addEventListener('scroll', () => {
+        invalidateLayoutCaches();
+        if (typingPreviewEl || activeInputTagEl) scheduleOverlayReposition();
+      }, { capture: true, passive: true });
+      window.addEventListener('resize', () => {
+        invalidateLayoutCaches();
+        if (typingPreviewEl || activeInputTagEl) scheduleOverlayReposition();
+      }, { passive: true });
     } catch {}
   }
 
@@ -515,7 +520,7 @@
           transition: none !important;
         }
         [data-attk-role="ripple"] { display: none !important; }
-        .__attk-input-tag, .__attk-som, .__attk-hl { animation: none !important; transition: none !important; }
+        .__attk-input-tag, .__attk-hl { animation: none !important; transition: none !important; }
       }
       [data-attk-role="typing-preview"] {
         position: fixed;
@@ -615,23 +620,6 @@
         box-shadow: 0 2px 8px rgba(0,0,0,.4);
         opacity: 1;
         transition: opacity 200ms ease;
-      }
-      .__attk-som {
-        position: fixed;
-        min-width: 20px;
-        height: 20px;
-        padding: 0 5px;
-        border-radius: 10px;
-        background: #67e8b0;
-        color: #082017;
-        font: 700 11px/20px system-ui, -apple-system, sans-serif;
-        text-align: center;
-        pointer-events: none !important;
-        z-index: 2147483645;
-        transform: translate(-50%,-50%);
-        box-shadow: 0 2px 8px rgba(0,0,0,.35);
-        border: 1px solid rgba(255,255,255,.9);
-        user-select: none;
       }
     `;
     (document.head || document.documentElement).appendChild(styleEl);
@@ -765,27 +753,13 @@
     current.tag.style.top = Math.max(2, Math.min(vh - tagRect.height - 2, rect.top - tagRect.height - 4)) + 'px';
   }
 
-  function repositionSOM() {
-    if (!somActive) return;
-    somEls = somEls.filter(marker => {
-      const el = marker.__attkAnchor;
-      if (!el?.isConnected) { marker.remove(); return false; }
-      const rect = el.getBoundingClientRect();
-      if (!rect.width || !rect.height) { marker.style.display = 'none'; return true; }
-      marker.style.display = '';
-      marker.style.left = (rect.left + Math.min(18, rect.width / 2)) + 'px';
-      marker.style.top = (rect.top + 8) + 'px';
-      return true;
-    });
-  }
-
   function scheduleOverlayReposition() {
+    if (!typingPreviewEl && !activeInputTagEl) return;
     if (overlayRepositionFrame) return;
     const run = () => {
       overlayRepositionFrame = null;
       positionTypingPreview();
       repositionInputIndicator();
-      repositionSOM();
     };
     if (typeof requestAnimationFrame === 'function') overlayRepositionFrame = requestAnimationFrame(run);
     else run();
@@ -860,7 +834,7 @@
   function isInternalNode(node) {
     if (!node || !node.nodeType) return false;
     if (node.hasAttribute && node.hasAttribute('data-attk-internal')) return true;
-    if (node.classList && (node.classList.contains('__attk-som') || node.classList.contains('__attk-hl'))) return true;
+    if (node.classList && node.classList.contains('__attk-hl')) return true;
     return false;
   }
 
@@ -1432,45 +1406,6 @@
     }
     selectorCache.set(el, { value, revision: domRevision, at: now });
     return value;
-  }
-
-  // --- SOM overlay (numbered interactables) ---
-  function toggleSOM() {
-    if (somActive) {
-      somEls.forEach(n => { if (n.parentNode) n.remove(); });
-      somEls = [];
-      somActive = false;
-      return { ok: true, active: false };
-    }
-    ensureStyle();
-    const sels = 'a[href], button, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="combobox"], [role="option"], [role="link"], input, textarea, select, summary, label[for], [onclick], [tabindex]:not([tabindex="-1"])';
-    const inspect = inspectionContext();
-    const vh = window.innerHeight || document.documentElement.clientHeight;
-    const els = queryAllDeep(document, sels).filter(el => {
-      if (isInternalNode(el)) return false;
-      const r = inspect.rect(el);
-      return r.width > 4 && r.height > 4 && r.top >= -200 && r.top < vh + 200 && isElementVisible(el, r);
-    }).slice(0, 60);
-
-    somEls = els.map((el, i) => {
-      const r = inspect.rect(el);
-      const n = document.createElement('div');
-      n.className = '__attk-som';
-      n.setAttribute('data-attk-internal', 'true');
-      n.setAttribute('aria-hidden', 'true');
-      n.textContent = i + 1;
-      n.__attkAnchor = el;
-      n.style.left = (r.left + Math.min(18, r.width / 2)) + 'px';
-      n.style.top = (r.top + 8) + 'px';
-      const sel = cssPath(el);
-      n.dataset.selector = sel;
-      n.title = sel;
-      (document.body || document.documentElement).appendChild(n);
-      return n;
-    });
-    somActive = true;
-    scheduleOverlayReposition();
-    return { ok: true, active: true, count: els.length };
   }
 
   // --- scrolling & keyboard helpers ---
@@ -2165,11 +2100,6 @@
 
         if (msg.type === 'CURSOR_CONSOLE_LOGS') {
           const r = getConsoleLogs(msg.types, msg.clear === true);
-          return sendResponse(r);
-        }
-
-        if (msg.type === 'CURSOR_SOM_TOGGLE') {
-          const r = toggleSOM();
           return sendResponse(r);
         }
 

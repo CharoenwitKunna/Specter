@@ -1,56 +1,14 @@
 // popup.js — lightweight status & tab manager for Specter
 let currentTargetId = null;
 
-const BRIDGE_PORTS = [8765, 8766, 8767, 8768];
-let cachedBridgeUrl = null;
-let cachedBridgeAt = 0;
-const BRIDGE_CACHE_MS = 10000;
-
-async function getBridgeUrl() {
-  if (cachedBridgeUrl && Date.now() - cachedBridgeAt < BRIDGE_CACHE_MS) {
-    try {
-      const probe = await fetch(`${cachedBridgeUrl}/health`, { signal: AbortSignal.timeout(1500) });
-      if (probe.ok) {
-        const d = await probe.json().catch(() => null);
-        if (d?.ok) return cachedBridgeUrl;
-      }
-    } catch {}
-    cachedBridgeUrl = null;
-  }
-  for (const p of BRIDGE_PORTS) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${p}/health`, { signal: AbortSignal.timeout(1500) });
-      if (res.ok) {
-        const data = await res.json().catch(() => null);
-        if (data?.ok) {
-          cachedBridgeUrl = `http://127.0.0.1:${p}`;
-          cachedBridgeAt = Date.now();
-          const portTag = document.querySelector('.port-tag');
-          if (portTag) portTag.textContent = `127.0.0.1:${p}`;
-          return cachedBridgeUrl;
-        }
-      }
-    } catch {}
-  }
-  const fallback = cachedBridgeUrl || `http://127.0.0.1:${BRIDGE_PORTS[0]}`;
-  const portTag = document.querySelector('.port-tag');
-  if (portTag) {
-    try {
-      const u = new URL(fallback);
-      portTag.textContent = u.host;
-    } catch {
-      portTag.textContent = fallback.replace(/^https?:\/\//, '');
-    }
-  }
-  return fallback;
-}
-
 async function updateBridgeStatus() {
   const badge = document.getElementById('bridge-status');
   if (!badge) return;
   chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'bridge_status' } }, (res) => {
     if (chrome.runtime.lastError || !res?.ok || !res?.result) {
-      checkBridgeDirectly(badge);
+      badge.textContent = '● Offline';
+      badge.className = 'bridge-badge bridge-offline';
+      badge.title = 'Bridge unreachable';
       return;
     }
     const info = res.result;
@@ -68,29 +26,6 @@ async function updateBridgeStatus() {
       badge.title = 'Bridge unreachable';
     }
   });
-}
-
-async function checkBridgeDirectly(badge) {
-  for (const p of BRIDGE_PORTS) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${p}/health`, { signal: AbortSignal.timeout(1000) });
-      if (res.ok) {
-        const data = await res.json().catch(() => null);
-        if (data?.ok) {
-          if (data.wssHealthy) {
-            badge.textContent = `● WSS :${data.wssPort || p + 1}`;
-            badge.className = 'bridge-badge bridge-wss';
-          } else {
-            badge.textContent = `● HTTP :${p}`;
-            badge.className = 'bridge-badge bridge-http';
-          }
-          return;
-        }
-      }
-    } catch {}
-  }
-  badge.textContent = '● Offline';
-  badge.className = 'bridge-badge bridge-offline';
 }
 
 async function updateUI() {
@@ -219,16 +154,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Toggle Numbers (SOM)
-  document.getElementById('btn-toggle-som').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'som' } }, () => {
-      if (chrome.runtime.lastError) {
-        setStatus('Error: ' + chrome.runtime.lastError.message);
-        return;
-      }
-      setStatus('Toggled SOM numbers');
-    });
-  });
-
   // Copy Target URL
   document.getElementById('btn-copy-url').addEventListener('click', async () => {
     const urlEl = document.getElementById('target-url');

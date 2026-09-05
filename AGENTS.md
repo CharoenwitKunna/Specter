@@ -69,7 +69,6 @@ content.js (Injected into active/target tab)
 | `tab_get_html` | `selector` (optional) | Extract raw HTML |
 | `tab_stats` | — | Page title, URL, viewport dimensions, ready state |
 | `tab_screenshot` | `quality` (optional) | Capture viewport screenshot |
-| `tab_scroll_into_view`| `selector` or `snapshotId` | Scroll element into visible area |
 | `click` | `selector`, `snapshotId`, or `x`/`y`, `button`, `clickCount` | Click with ghost cursor animation |
 | `type` | `text`, `selector`, `clear` | Type into input/textarea |
 | `key` | `key`, `code`, `modifiers` | Dispatch keyboard event |

@@ -57,7 +57,7 @@ test('all tools have complete readOnlyHint, destructiveHint, idempotentHint, and
   const hints = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
   const allToolNames = [
     'tab_navigate', 'tab_eval', 'tab_list', 'tab_switch', 'tab_new', 'tab_close',
-    'tab_snapshot', 'tab_find', 'tab_visual_snapshot', 'tab_scroll_into_view',
+    'tab_snapshot', 'tab_find', 'tab_visual_snapshot',
     'tab_get_text', 'tab_get_html', 'tab_stats', 'tab_screenshot',
     'click', 'type', 'key', 'scroll', 'drag', 'wait', 'wait_for',
     'wait_for_network_idle', 'tab_console_logs', 'batch_actions'

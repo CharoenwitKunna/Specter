@@ -70,7 +70,6 @@ const TOOLS = [
   { name: 'tab_snapshot', description: 'Snapshot of interactive elements on the active tab (like computer_use SOM) — ids, tags, text, selectors, rects, viewport, and in_viewport status. Includes elements below the fold and inside Shadow DOM.', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { max: { type: 'number', description: 'max elements (default 80)' }, inViewportOnly: { type: 'boolean', description: 'Only return elements currently visible in viewport' }, frameId: { type: 'number', description: 'Optional Chrome frame ID' } } } },
   { name: 'tab_find', description: 'Find visible elements by human text, ARIA label, placeholder, title, or role; use before clicking dynamic pages', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { text: { type: 'string' }, label: { type: 'string' }, role: { type: 'string' }, max: { type: 'number' }, frameId: { type: 'number' } } } },
   { name: 'tab_visual_snapshot', description: 'Capture a screenshot together with the current semantic element snapshot for visual fallback', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { format: { type: 'string', enum: ['png', 'jpeg'] }, quality: { type: 'number', description: 'JPEG quality 30-90 (default 60)' }, max: { type: 'number' }, frameId: { type: 'number', description: 'Optional Chrome frame ID for the semantic snapshot' } } } },
-  { name: 'tab_scroll_into_view', description: 'Scroll an element into view by selector or snapshot ID', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, element: { type: 'number' }, frameId: { type: 'number' } } } },
   { name: 'tab_get_text', description: 'Get visible text of the active tab', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, frameId: { type: 'number' } } } },
   { name: 'tab_get_html', description: 'Get HTML of the active tab (truncated)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, frameId: { type: 'number' } } } },
   { name: 'tab_stats', description: 'Get page stats (links/images/headings/word count)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { frameId: { type: 'number' } } } },
@@ -94,7 +93,7 @@ const MAX_BATCH_ACTIONS = 50;
 // kept as individual calls so a batch cannot silently change its target or
 // exfiltrate more data than the caller requested.
 const BATCH_TOOLS = new Set([
-  'tab_snapshot', 'tab_find', 'tab_scroll_into_view',
+  'tab_snapshot', 'tab_find',
   'tab_get_text', 'tab_get_html', 'tab_stats', 'click', 'type', 'key',
   'scroll', 'drag', 'wait', 'wait_for', 'wait_for_network_idle', 'tab_console_logs'
 ]);
@@ -129,7 +128,6 @@ function toolToAction(name, args) {
       if (!Number.isFinite(quality) || quality < 30 || quality > 90) throw Object.assign(new Error('quality must be 30-90'), { status: 400 });
       return { action: 'visual_snapshot', format: args.format || 'jpeg', quality, max: args.max ?? 80, frameId: args.frameId };
     }
-    case 'tab_scroll_into_view': return { action: 'scroll_into_view', selector: args.selector, element: args.element, frameId: args.frameId };
     case 'tab_get_text': return { action: 'get_text', selector: args.selector, frameId: args.frameId };
     case 'tab_get_html': return { action: 'get_html', selector: args.selector, frameId: args.frameId };
     case 'tab_stats': return { action: 'get_stats', frameId: args.frameId };
