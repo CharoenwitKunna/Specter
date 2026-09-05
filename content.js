@@ -868,7 +868,7 @@
     if (!el || !el.isConnected) return false;
     if (typeof el.checkVisibility === 'function') {
       try {
-        if (!el.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true })) return false;
+        if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
       } catch {}
     }
     const r = rect || el.getBoundingClientRect();
@@ -1241,15 +1241,14 @@
       const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '';
 
       if (el.tagName === 'SELECT') {
-        let matched = false;
+        let matchedVal = requestedText;
         for (const opt of el.options) {
           if (opt.value === requestedText || opt.text === requestedText || opt.text.trim().toLowerCase() === requestedText.trim().toLowerCase()) {
-            el.value = opt.value;
-            matched = true;
+            matchedVal = opt.value;
             break;
           }
         }
-        if (!matched) el.value = requestedText;
+        setNativeValue(el, matchedVal);
         el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } else if (isContentEditable) {
@@ -1273,12 +1272,9 @@
           } catch {}
 
           if (!inserted) {
-            const range = document.createRange();
-            range.selectNodeContents(el);
             const sel = window.getSelection();
-            if (sel) {
-              sel.removeAllRanges();
-              sel.addRange(range);
+            if (sel && sel.rangeCount > 0) {
+              const range = sel.getRangeAt(0);
               range.deleteContents();
               const textNode = document.createTextNode(requestedText);
               range.insertNode(textNode);
@@ -1286,6 +1282,9 @@
               range.setEndAfter(textNode);
               sel.removeAllRanges();
               sel.addRange(range);
+            } else {
+              const textNode = document.createTextNode(requestedText);
+              el.appendChild(textNode);
             }
           }
           el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: requestedText }));
@@ -1300,7 +1299,11 @@
           el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'deleteContentBackward' }));
         }
 
-        if (perChar && !el.readOnly) {
+        const inputType = (el.getAttribute('type') || '').toLowerCase();
+        const atomicOnlyTypes = ['number', 'date', 'time', 'datetime-local', 'month', 'week', 'range', 'color'];
+        const effectivePerChar = perChar && !el.readOnly && !atomicOnlyTypes.includes(inputType);
+
+        if (effectivePerChar) {
           let typed = '';
           for (const ch of requestedText) {
             typeCharEvents(el, ch);
@@ -1373,6 +1376,10 @@
     let cur = el;
     let depth = 0;
     while (cur && cur !== root && cur !== document.documentElement && cur !== document.body && depth < 8) {
+      if (cur !== el && cur.id && !cur.id.startsWith('__attk')) {
+        path = '#' + CSS.escape(cur.id) + (path ? ' > ' + path : '');
+        return path;
+      }
       let sel = cur.tagName.toLowerCase();
       const classAttr = cur.getAttribute ? cur.getAttribute('class') : null;
       let classStr = (classAttr && typeof classAttr === 'string' && classAttr.trim()) ? classAttr : (typeof cur.className === 'string' ? cur.className : '');
@@ -1383,11 +1390,19 @@
           sel += classes.map(c => '.' + CSS.escape(c)).join('');
         }
       }
-      const parent = cur.parentElement;
-      if (parent) {
-        const siblings = [...parent.children].filter(c => c.tagName === cur.tagName);
-        if (siblings.length > 1) {
-          sel += `:nth-of-type(${siblings.indexOf(cur) + 1})`;
+      const parent = cur.parentElement || (cur.parentNode instanceof ShadowRoot || cur.parentNode instanceof DocumentFragment ? cur.parentNode : null);
+      if (parent && parent.children) {
+        let count = 0;
+        let index = 0;
+        for (let i = 0; i < parent.children.length; i++) {
+          const child = parent.children[i];
+          if (child.tagName === cur.tagName) {
+            count++;
+            if (child === cur) index = count;
+          }
+        }
+        if (count > 1 && index > 0) {
+          sel += `:nth-of-type(${index})`;
         }
       }
       path = sel + (path ? ' > ' + path : '');
@@ -1428,7 +1443,7 @@
       return { ok: true, active: false };
     }
     ensureStyle();
-    const sels = 'a[href], button, [role="button"], input, textarea, select, [onclick], [tabindex]:not([tabindex="-1"])';
+    const sels = 'a[href], button, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="combobox"], [role="option"], [role="link"], input, textarea, select, summary, label[for], [onclick], [tabindex]:not([tabindex="-1"])';
     const inspect = inspectionContext();
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const els = queryAllDeep(document, sels).filter(el => {
@@ -1490,18 +1505,43 @@
     return key;
   }
 
-  function doKey(key, selector) {
+  function doKey(keyOrCombo, selector, modifiers = []) {
+    let rawKey = keyOrCombo || 'Enter';
+    let mods = Array.isArray(modifiers) ? [...modifiers] : [];
+
+    // Support combo strings like "Control+Enter" or "Ctrl+Shift+A"
+    if (typeof rawKey === 'string' && rawKey.includes('+')) {
+      const parts = rawKey.split('+').map(p => p.trim());
+      rawKey = parts.pop();
+      for (const part of parts) {
+        const lower = part.toLowerCase();
+        if ((lower === 'ctrl' || lower === 'control') && !mods.includes('Control')) mods.push('Control');
+        else if (lower === 'alt' && !mods.includes('Alt')) mods.push('Alt');
+        else if (lower === 'shift' && !mods.includes('Shift')) mods.push('Shift');
+        else if ((lower === 'meta' || lower === 'command' || lower === 'cmd') && !mods.includes('Meta')) mods.push('Meta');
+      }
+    }
+
     let el = selector ? queryDeep(selector) : document.activeElement;
     if (!el || el === document.body || isInternalNode(el)) el = document.activeElement || document.body;
     try { if (typeof el.focus === 'function') el.focus(); } catch {}
 
-    const code = getEventCode(key);
-    const keyCode = getKeyCode(key);
+    const code = getEventCode(rawKey);
+    const keyCode = getKeyCode(rawKey);
+    const ctrlKey = mods.includes('Control') || mods.includes('Ctrl');
+    const altKey = mods.includes('Alt');
+    const shiftKey = mods.includes('Shift');
+    const metaKey = mods.includes('Meta');
+
     const init = {
-      key,
+      key: rawKey,
       code,
       keyCode,
       which: keyCode,
+      ctrlKey,
+      altKey,
+      shiftKey,
+      metaKey,
       bubbles: true,
       cancelable: true,
       composed: true,
@@ -1511,13 +1551,13 @@
     const downEv = new KeyboardEvent('keydown', init);
     const notCancelled = el.dispatchEvent(downEv);
 
-    if (key.length === 1 || key === 'Enter') {
+    if (rawKey.length === 1 || rawKey === 'Enter') {
       try { el.dispatchEvent(new KeyboardEvent('keypress', init)); } catch {}
     }
 
     el.dispatchEvent(new KeyboardEvent('keyup', init));
 
-    if (key === 'Enter' && notCancelled) {
+    if (rawKey === 'Enter' && notCancelled) {
       if (el.tagName === 'INPUT') {
         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         if (el.form && typeof el.form.requestSubmit === 'function') {
@@ -1556,15 +1596,19 @@
   function doFind(opts = {}) {
     try {
       const inspect = inspectionContext();
-      const items = semanticCandidates(opts, inspect).map((el, index) => {
+      const snapMap = (window.__attk_snapMap instanceof Map) ? window.__attk_snapMap : (window.__attk_snapMap = new Map());
+      const candidates = semanticCandidates(opts, inspect);
+      const items = candidates.map((el, index) => {
         const r = inspect.rect(el);
+        const sel = inspect.selector(el);
+        snapMap.set(index + 1, { el, selector: sel });
         return {
-          index,
+          index: index + 1,
           tag: el.tagName?.toLowerCase() || '',
           role: el.getAttribute('role') || el.tagName?.toLowerCase() || '',
           text: (el.innerText || el.value || el.textContent || '').trim().slice(0, 160),
           label: el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || '',
-          selector: inspect.selector(el),
+          selector: sel,
           rect: toPlainRect(r),
           in_viewport: r.bottom >= 0 && r.top <= innerHeight && r.right >= 0 && r.left <= innerWidth
         };
@@ -1662,6 +1706,42 @@
       return cached.results.filter(el => el && el.isConnected && !isInternalNode(el));
     }
 
+    if (cacheSelector.includes('>>>')) {
+      const parts = cacheSelector.split('>>>').map(s => s.trim()).filter(Boolean);
+      let currentRoots = [searchRoot];
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        const isLast = i === parts.length - 1;
+        const nextElements = [];
+        const seenPart = new Set();
+
+        for (const r of currentRoots) {
+          for (const subRoot of walkRoots(r)) {
+            try {
+              const matched = subRoot.querySelectorAll(part);
+              for (let m = 0; m < matched.length; m++) {
+                const el = matched[m];
+                if (!isInternalNode(el) && !seenPart.has(el)) {
+                  seenPart.add(el);
+                  nextElements.push(el);
+                }
+              }
+            } catch {}
+          }
+        }
+
+        if (isLast) {
+          bySelector.set(cacheSelector, { results: nextElements, revision: domRevision, at: now });
+          return nextElements;
+        }
+
+        currentRoots = nextElements.map(el => el.shadowRoot || el).filter(Boolean);
+        if (currentRoots.length === 0) break;
+      }
+      bySelector.set(cacheSelector, { results: [], revision: domRevision, at: now });
+      return [];
+    }
+
     const seen = new Set();
     for (const r of walkRoots(searchRoot)) {
       try {
@@ -1733,7 +1813,7 @@
       return snapshotCache.result;
     }
 
-    const sels = 'a[href], button, [role="button"], input, textarea, select, h1, h2, h3, [onclick], [tabindex]:not([tabindex="-1"])';
+    const sels = 'a[href], button, [role="button"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="combobox"], [role="option"], [role="link"], input, textarea, select, summary, label[for], [onclick], [tabindex]:not([tabindex="-1"])';
     const allEls = queryAllDeep(document.body || document.documentElement, sels);
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const vw = window.innerWidth || document.documentElement.clientWidth;
@@ -1766,6 +1846,7 @@
         h: vh,
         scrollX: window.scrollX,
         scrollY: window.scrollY,
+        devicePixelRatio: window.devicePixelRatio || 1,
         pageHeight: document.documentElement?.scrollHeight || document.body?.scrollHeight || 0
       },
       elements: entries.map((entry, i) => ({
@@ -2032,7 +2113,13 @@
         }
 
         if (msg.type === 'CURSOR_TYPE') {
-          const res = await doType(msg.selector, msg.text, { clear: msg.clear === true, perChar: msg.perChar !== false });
+          let target = msg.selector;
+          if (typeof msg.element === 'number') {
+            const snap = window.__attk_snapMap?.get(msg.element);
+            if (snap?.el) target = snap.el;
+            else if (snap?.selector) target = snap.selector;
+          }
+          const res = await doType(target, msg.text, { clear: msg.clear === true, perChar: msg.perChar !== false });
           return sendResponse(res);
         }
 
@@ -2042,7 +2129,7 @@
         }
 
         if (msg.type === 'CURSOR_KEY') {
-          return sendResponse(doKey(msg.key, msg.selector));
+          return sendResponse(doKey(msg.key, msg.selector, msg.modifiers));
         }
 
         if (msg.type === 'CURSOR_QUERY') {

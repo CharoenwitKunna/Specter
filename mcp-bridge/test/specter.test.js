@@ -89,8 +89,8 @@ test('batch actions are bounded, allowlisted, serialized, and report stop state'
 
 test('batched child actions preserve explicit frame routing', () => {
   assert.match(bridge, /action: 'click_xy', x: args\.x, y: args\.y, frameId: args\.frameId/);
-  assert.match(bridge, /action: 'type', selector: args\.selector, text: args\.text, frameId: args\.frameId/);
-  assert.match(background, /type: 'CURSOR_TYPE', selector: job\.selector, text: job\.text, frameId: job\.frameId/);
+  assert.match(bridge, /action: 'type', selector: args\.selector, element: parsedId, text: args\.text, frameId: args\.frameId/);
+  assert.match(background, /type: 'CURSOR_TYPE', selector: job\.selector, element: job\.element, text: job\.text, frameId: job\.frameId/);
   assert.match(background, /waitForSelector\(job\.selector, job\.timeoutMs \?\? 10000, job\.frameId\)/);
   assert.match(bridge, /frameId must be a non-negative integer/);
   assert.match(background, /Invalid frameId at batch action index/);

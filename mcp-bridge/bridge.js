@@ -77,8 +77,8 @@ const TOOLS = [
   { name: 'tab_stats', description: 'Get page stats (links/images/headings/word count)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { frameId: { type: 'number' } } } },
   { name: 'tab_screenshot', description: 'Capture visible tab as a compressed image for visual inspection', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { format: { type: 'string', enum: ['png', 'jpeg'] }, quality: { type: 'number', description: 'JPEG quality 30-90 (default 60)' } } } },
   { name: 'click', description: 'Click an element by selector, coordinates (x,y), snapshot/DOM ID, or semantic text/label/role', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, element: { type: 'number' }, text: { type: 'string' }, label: { type: 'string' }, role: { type: 'string' }, frameId: { type: 'number' }, x: { type: 'number' }, y: { type: 'number' }, kind: { type: 'string', enum: ['click','right','double'] } } } },
-  { name: 'type', description: 'Type text into an input or selector', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, text: { type: 'string' }, frameId: { type: 'number' }, clear: { type: 'boolean', description: 'Clear existing value first' }, perChar: { type: 'boolean', default: true, description: 'Type character-by-character with per-char events (default true; set false for bulk insertion)' } }, required: ['selector','text'] } },
-  { name: 'key', description: 'Send a keyboard key (Enter, Escape, Tab, ArrowDown, etc)', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, inputSchema: { type: 'object', properties: { key: { type: 'string' }, selector: { type: 'string' }, frameId: { type: 'number' } }, required: ['key'] } },
+  { name: 'type', description: 'Type text into an input or selector', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, inputSchema: { type: 'object', properties: { selector: { type: 'string' }, element: { type: 'number', description: 'Snapshot ID or element index' }, snapshotId: { type: 'number', description: 'Alias for element' }, text: { type: 'string' }, frameId: { type: 'number' }, clear: { type: 'boolean', description: 'Clear existing value first' }, perChar: { type: 'boolean', default: true, description: 'Type character-by-character with per-char events (default true; set false for bulk insertion)' } }, required: ['text'] } },
+  { name: 'key', description: 'Send a keyboard key (Enter, Escape, Tab, ArrowDown, etc)', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, inputSchema: { type: 'object', properties: { key: { type: 'string' }, selector: { type: 'string' }, modifiers: { type: 'array', items: { type: 'string', enum: ['Control', 'Alt', 'Shift', 'Meta'] }, description: 'Modifier keys to hold during dispatch' }, frameId: { type: 'number' } }, required: ['key'] } },
   { name: 'scroll', description: 'Scroll page (direction: up/down/left/right, or into view of selector/element)', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, inputSchema: { type: 'object', properties: { direction: { type: 'string', enum: ['up','down','left','right'] }, amount: { type: 'number' }, selector: { type: 'string' }, element: { type: 'number' }, frameId: { type: 'number' } } } },
   { name: 'drag', description: 'Drag from source to target (selector or x,y)', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, inputSchema: { type: 'object', properties: { from_selector: { type: 'string' }, from_x: { type: 'number' }, from_y: { type: 'number' }, to_selector: { type: 'string' }, to_x: { type: 'number' }, to_y: { type: 'number' }, frameId: { type: 'number' } } } },
   { name: 'wait', description: 'Pause / sleep for a duration in milliseconds', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, inputSchema: { type: 'object', properties: { ms: { type: 'number', description: 'Milliseconds to wait' } }, required: ['ms'] } },
@@ -150,8 +150,12 @@ function toolToAction(name, args) {
       if (typeof args.x === 'number' && typeof args.y === 'number') return { action: 'click_xy', x: args.x, y: args.y, frameId: args.frameId, kind };
       return { action: 'click', selector: args.selector, frameId: args.frameId, kind };
     }
-    case 'type': return { action: 'type', selector: args.selector, text: args.text, frameId: args.frameId, clear: args.clear === true, perChar: args.perChar !== false };
-    case 'key': return { action: 'key', key: args.key, selector: args.selector, frameId: args.frameId };
+    case 'type': {
+      const elId = args.element ?? args.snapshotId;
+      const parsedId = (typeof elId === 'number') ? elId : (typeof elId === 'string' && /^\d+$/.test(elId) ? parseInt(elId, 10) : undefined);
+      return { action: 'type', selector: args.selector, element: parsedId, text: args.text, frameId: args.frameId, clear: args.clear === true, perChar: args.perChar !== false };
+    }
+    case 'key': return { action: 'key', key: args.key, selector: args.selector, modifiers: args.modifiers, frameId: args.frameId };
     case 'scroll': {
       if (args.selector || typeof args.element === 'number') return { action: 'scroll_into_view', selector: args.selector, element: args.element, frameId: args.frameId };
       return { action: 'scroll', direction: args.direction || 'down', amount: args.amount ?? 400, frameId: args.frameId };
@@ -177,9 +181,6 @@ function toolToAction(name, args) {
     }
     case 'tab_console_logs': {
       return { action: 'console_logs', types: args.types, clear: args.clear === true, frameId: args.frameId };
-    }
-    case 'downloads': {
-      return { action: 'downloads', limit: args.limit, state: args.state };
     }
     case 'batch_actions': {
       if (!Array.isArray(args.actions) || args.actions.length < 1 || args.actions.length > MAX_BATCH_ACTIONS) {

@@ -22,6 +22,20 @@ All notable changes to the Specter browser extension and MCP bridge are document
 - Standardized click parameter handling across bridge, supporting `snapshotId`, numeric string IDs, and converting `button: 2`/`clickCount: 2` into `kind: 'right'`/`'double'`.
 - Avoided redundant scroll jumps during clicks when elements are already comfortably visible in the viewport.
 - Replaced non-standard `PointerEvent('click')` with standard W3C `MouseEvent('click')` to restore React/Vue delegated event bubbling.
+- Fixed `queryAllDeep` throwing DOMException on `>>>` shadow DOM selectors by decomposing traversal across shadow boundaries.
+- Fixed hidden elements inside `opacity: 0` ancestor containers falsely reporting as visible by enabling `checkOpacity: true` in `checkVisibility`.
+- Improved selector generation stability in `cssPathWithinRoot` by detecting ancestor element IDs and properly indexing direct children of `ShadowRoot`.
+- Expanded interactive element detection in `tab_snapshot` and SOM to include standard ARIA interactive roles (`checkbox`, `radio`, `switch`, `tab`, `menuitem`, `combobox`, `option`, `link`, `summary`, and `label[for]`).
+- Added `devicePixelRatio` to viewport metrics in `tab_snapshot` and `tab_visual_snapshot` for Retina/HiDPI display alignment.
+- Populated `__attk_snapMap` during `tab_find` so returned elements can be immediately clicked or typed into by numeric ID.
+- Automatically routed atomic HTML5 input types (`number`, `date`, `time`, `datetime-local`, `range`, `color`) through atomic value assignment (`perChar: false`) to avoid browser validation resets.
+- Fixed `contenteditable` typing fallback preserving existing structured rich-text editor DOM state.
+- Supported modifier keys (`Control`, `Alt`, `Shift`, `Meta`) and combo strings (e.g., `Control+Enter`) in `key` tool.
+- Supported numeric `element` and `snapshotId` in `type` tool alongside CSS selectors.
+- Fixed React controlled component state updates on `<select>` inputs by delegating value updates to `setNativeValue`.
+- Resolved `tab_switch` deadlock allowing switching between multiple tabs within the Specter group.
+- Cleared stale `wssCompleted` cache in background service worker upon fresh connection handshake with MCP bridge.
+- Removed unreachable duplicate `case 'downloads'` in bridge dispatcher.
 
 ### Added
 - Added the safe `batch_actions` MCP/HTTP tool for up to 50 serialized DOM interactions against the persisted target tab, with per-action results and configurable stop/continue behavior. Target-changing operations, screenshots, downloads, and unrestricted eval are rejected inside batches.

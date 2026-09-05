@@ -117,9 +117,9 @@ async function connectWss() {
           return;
         }
         if (msg.type === 'ready') {
-          // Only reset backoff after the bridge handshake, not merely after a
-          // TCP connection that may immediately flap.
+          // Reset backoff and clear completed cache on fresh handshake from bridge
           wssRetryMs = 1000;
+          wssCompleted.clear();
           return;
         }
         if (msg.type === 'ack') return;
@@ -630,16 +630,10 @@ async function handleJob(job) {
       case 'switch_tab': {
         const tabId = typeof job.tabId === 'number' ? job.tabId : (job.tabId ? parseInt(job.tabId, 10) : null);
         const prevTargetId = await getStoredTargetTabId();
-        if (prevTargetId && tabId !== null && tabId !== prevTargetId) {
-          throw new Error(`Specter is locked to tab ${prevTargetId}; unlock it before selecting another tab`);
-        }
         if (tabId !== null) {
           let tab;
           try { tab = await chrome.tabs.get(tabId); } catch { throw new Error(`Target tab ${tabId} does not exist`); }
           if (!(await isSpecterGroupTab(tab))) throw new Error('Specter can only switch to tabs inside the 👻 Specter group');
-        }
-        if (prevTargetId && prevTargetId !== tabId) {
-          await unmarkTabFromAgentGroup(prevTargetId);
         }
         targetInvalidated = false;
         await setTargetTabId(tabId);
@@ -695,8 +689,8 @@ async function handleJob(job) {
       case 'click_semantic': result = await sendToActive({ type: 'CURSOR_CLICK_SEMANTIC', text: job.text, label: job.label, role: job.role, frameId: job.frameId, kind: job.kind || 'click', duration: job.duration || 520 }); break;
       case 'click': result = await sendToActive({ type: 'CURSOR_CLICK', selector: job.selector, frameId: job.frameId, kind: job.kind || 'click', duration: job.duration || 520 }); break;
       case 'click_xy': result = await sendToActive({ type: 'CURSOR_CLICK_EL', x: job.x, y: job.y, frameId: job.frameId, kind: job.kind || 'click', duration: job.duration || 520 }); break;
-      case 'type': result = await sendToActive({ type: 'CURSOR_TYPE', selector: job.selector, text: job.text, frameId: job.frameId, clear: job.clear === true, perChar: job.perChar !== false }); break;
-      case 'key': result = await sendToActive({ type: 'CURSOR_KEY', key: job.key, selector: job.selector, frameId: job.frameId }); break;
+      case 'type': result = await sendToActive({ type: 'CURSOR_TYPE', selector: job.selector, element: job.element, text: job.text, frameId: job.frameId, clear: job.clear === true, perChar: job.perChar !== false }); break;
+      case 'key': result = await sendToActive({ type: 'CURSOR_KEY', key: job.key, selector: job.selector, modifiers: job.modifiers, frameId: job.frameId }); break;
       case 'scroll': result = await sendToActive({ type: 'CURSOR_SCROLL', direction: job.direction || 'down', amount: job.amount ?? 400, frameId: job.frameId }); break;
       case 'som': result = await sendToActive({ type: 'CURSOR_SOM_TOGGLE', frameId: job.frameId }); break;
       case 'get_text': result = await sendToActive({ type: 'GET_TEXT', selector: job.selector, frameId: job.frameId }); break;
