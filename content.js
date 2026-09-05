@@ -1018,11 +1018,9 @@
     }
 
     try {
-      // In modern browsers, PointerEvent is a subclass of MouseEvent
-      const isPointerCapable = typeof PointerEvent === 'function';
-      const ev = (isPointerCapable && (type === 'click' || type === 'dblclick' || type === 'contextmenu'))
-        ? new PointerEvent(type, { ...commonInit, pointerId: 1, pointerType: 'mouse', isPrimary: true })
-        : new MouseEvent(type, commonInit);
+      // In modern browsers, click, dblclick, contextmenu MUST strictly be MouseEvent
+      // to comply with UI Events spec and allow React/Vue delegated synthetic event systems to work.
+      const ev = new MouseEvent(type, commonInit);
 
       // Polyfill pageX/pageY if browser didn't populate from clientX
       if (ev.pageX === 0 && pageX !== 0) {
@@ -1034,10 +1032,16 @@
   }
 
   function resolveTargetAt(x, y, fallbackEl) {
-    const rawTarget = document.elementFromPoint(x, y);
+    let rawTarget = document.elementFromPoint(x, y);
+    // Penetrate Shadow DOM roots if target is a shadow host
+    while (rawTarget && rawTarget.shadowRoot) {
+      const inner = rawTarget.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === rawTarget) break;
+      rawTarget = inner;
+    }
     if (!rawTarget || isInternalNode(rawTarget)) return fallbackEl;
     if (fallbackEl) {
-      if (fallbackEl.contains(rawTarget) || rawTarget.contains(fallbackEl)) return rawTarget;
+      if (fallbackEl === rawTarget || fallbackEl.contains(rawTarget) || rawTarget.contains(fallbackEl)) return rawTarget;
       return fallbackEl;
     }
     return rawTarget;
@@ -1048,15 +1052,12 @@
     let el = typeof selectorOrEl === 'string' ? queryDeep(selectorOrEl) : selectorOrEl;
     if (!el) throw new Error('Element not found: ' + selectorOrEl);
 
-    if (scroll) {
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: scrollBehavior() });
-      await waitForScrollEnd(el);
-    }
-
     let center = getCenter(el);
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const vw = window.innerWidth || document.documentElement.clientWidth;
-    if (center.rect.top < 0 || center.rect.bottom > vh || center.rect.left < 0 || center.rect.right > vw) {
+    const alreadyInView = center.rect.top >= 0 && center.rect.bottom <= vh && center.rect.left >= 0 && center.rect.right <= vw;
+
+    if (scroll && !alreadyInView) {
       el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: scrollBehavior() });
       await waitForScrollEnd(el);
       center = getCenter(el);
@@ -1085,7 +1086,7 @@
         firePointerAndMouse(target, 'mousedown', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'mouseup', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'click', center.x, center.y, 0, 1);
-        await sleep(motionDelay(60));
+        await sleep(motionDelay(120));
         firePointerAndMouse(target, 'mousedown', center.x, center.y, 0, 2);
         firePointerAndMouse(target, 'mouseup', center.x, center.y, 0, 2);
         firePointerAndMouse(target, 'click', center.x, center.y, 0, 2);
@@ -1094,10 +1095,24 @@
         firePointerAndMouse(target, 'mouseover', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'mousemove', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'mousedown', center.x, center.y, 0, 1);
+        try { if (typeof el.focus === 'function') el.focus({ preventScroll: true }); } catch {}
         await sleep(motionDelay(50));
         firePointerAndMouse(target, 'mouseup', center.x, center.y, 0, 1);
         firePointerAndMouse(target, 'click', center.x, center.y, 0, 1);
-        try { if (typeof el.focus === 'function') el.focus({ preventScroll: true }); } catch {}
+
+        // Native default action activation: synthetic MouseEvent('click') does not trigger
+        // native browser navigation (<a href>), checkbox/radio toggle, or form submission in Chromium.
+        // Call el.click() if default wasn't prevented and element has a native click handler.
+        try {
+          const isNativeControl = target.matches?.('a[href], button, input, select, textarea, [role="button"], [role="checkbox"], [role="link"]') ||
+                                  el.matches?.('a[href], button, input, select, textarea, [role="button"], [role="checkbox"], [role="link"]');
+          if (isNativeControl) {
+            const clickTarget = (typeof target.click === 'function') ? target : el;
+            if (typeof clickTarget.click === 'function') {
+              clickTarget.click();
+            }
+          }
+        } catch {}
       }
 
       await sleep(motionDelay(100));
@@ -1984,10 +1999,8 @@
           c.classList.add('clicking');
           ripple(x, y);
           await sleep(motionDelay(80));
-          const rawTarget = document.elementFromPoint(x, y);
-          if (!rawTarget || isInternalNode(rawTarget)) throw new Error(`No clickable element at (${x}, ${y})`);
           const target = resolveTargetAt(x, y, null);
-          if (!target || target === document.documentElement || target === document.body) throw new Error(`No clickable element at (${x}, ${y})`);
+          if (!target) throw new Error(`No clickable element at (${x}, ${y})`);
           if (target.disabled || target.getAttribute('aria-disabled') === 'true') throw new Error('Target element is disabled');
           const btn = msg.kind === 'right' ? 2 : 0;
           const detail = msg.kind === 'double' ? 2 : 1;
@@ -2002,17 +2015,20 @@
             } else {
               firePointerAndMouse(target, 'click', x, y, 0, detail);
               if (msg.kind === 'double') {
+                await sleep(motionDelay(120));
                 firePointerAndMouse(target, 'mousedown', x, y, 0, 2);
                 firePointerAndMouse(target, 'mouseup', x, y, 0, 2);
                 firePointerAndMouse(target, 'click', x, y, 0, 2);
                 firePointerAndMouse(target, 'dblclick', x, y, 0, 2);
+              } else if (typeof target.click === 'function' && target.matches?.('a[href], button, input, select, textarea, [role="button"]')) {
+                try { target.click(); } catch {}
               }
             }
           }
           c.classList.remove('clicking');
           scheduleCursorFade(1200);
           invalidateDomCaches();
-          return sendResponse({ ok: true, x, y, dispatched: true, tag: target.tagName.toLowerCase() });
+          return sendResponse({ ok: true, x, y, dispatched: true, tag: target.tagName ? target.tagName.toLowerCase() : 'body' });
         }
 
         if (msg.type === 'CURSOR_TYPE') {

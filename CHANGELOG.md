@@ -16,6 +16,12 @@ All notable changes to the Specter browser extension and MCP bridge are document
 - Fixed network idle detection (`wait_for_network_idle`) race condition during page transitions by waiting on document `readyState` and properly clearing pending idle timers on active requests.
 - Eliminated duplicate console logging between isolated content script and MAIN-world probe.
 - Guarded XMLHttpRequest tracking state with reuse safety checks (`__sp_done`).
+- Fixed clicking on native HTML controls (`<a>` links, submit buttons, checkboxes, radio buttons) by invoking native click activation (`el.click()`) when not default-prevented by synthetic events.
+- Fixed Shadow DOM click targeting in `resolveTargetAt` by penetrating `shadowRoot` hierarchies to hit inner elements rather than stopping at the shadow host.
+- Fixed coordinate clicks rejecting valid root/background dismissals on `body`/`html`.
+- Standardized click parameter handling across bridge, supporting `snapshotId`, numeric string IDs, and converting `button: 2`/`clickCount: 2` into `kind: 'right'`/`'double'`.
+- Avoided redundant scroll jumps during clicks when elements are already comfortably visible in the viewport.
+- Replaced non-standard `PointerEvent('click')` with standard W3C `MouseEvent('click')` to restore React/Vue delegated event bubbling.
 
 ### Added
 - Added the safe `batch_actions` MCP/HTTP tool for up to 50 serialized DOM interactions against the persisted target tab, with per-action results and configurable stop/continue behavior. Target-changing operations, screenshots, downloads, and unrestricted eval are rejected inside batches.

@@ -142,10 +142,13 @@ function toolToAction(name, args) {
       return { action: 'screenshot', format: args.format || 'jpeg', quality };
     }
     case 'click': {
-      if (args.text || args.label || args.role) return { action: 'click_semantic', text: args.text, label: args.label, role: args.role, frameId: args.frameId, kind: args.kind };
-      if (typeof args.element === 'number') return { action: 'click_id', element: args.element, frameId: args.frameId, kind: args.kind };
-      if (typeof args.x === 'number' && typeof args.y === 'number') return { action: 'click_xy', x: args.x, y: args.y, frameId: args.frameId, kind: args.kind };
-      return { action: 'click', selector: args.selector, frameId: args.frameId, kind: args.kind };
+      const elId = args.element ?? args.snapshotId;
+      const parsedId = (typeof elId === 'number') ? elId : (typeof elId === 'string' && /^\d+$/.test(elId) ? parseInt(elId, 10) : null);
+      const kind = args.kind || (args.button === 2 || args.button === 'right' ? 'right' : (args.clickCount === 2 ? 'double' : 'click'));
+      if (args.text || args.label || args.role) return { action: 'click_semantic', text: args.text, label: args.label, role: args.role, frameId: args.frameId, kind };
+      if (parsedId !== null) return { action: 'click_id', element: parsedId, frameId: args.frameId, kind };
+      if (typeof args.x === 'number' && typeof args.y === 'number') return { action: 'click_xy', x: args.x, y: args.y, frameId: args.frameId, kind };
+      return { action: 'click', selector: args.selector, frameId: args.frameId, kind };
     }
     case 'type': return { action: 'type', selector: args.selector, text: args.text, frameId: args.frameId, clear: args.clear === true, perChar: args.perChar !== false };
     case 'key': return { action: 'key', key: args.key, selector: args.selector, frameId: args.frameId };
