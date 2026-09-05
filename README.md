@@ -38,6 +38,8 @@ Ghost-cursor browser automation for AI agents. Chrome extension + MCP server tha
 | `type` / `key` | Framework-safe typing (React/Vue setter bypass), key events |
 | `scroll` | Pixel scroll or scroll-into-view |
 | `drag` | Press → eased glide → release, selector or coordinates |
+| `wait_for_network_idle` | Wait until in-flight fetch and XHR network requests settle (zero active requests for idleMs) |
+| `tab_console_logs` | Retrieve buffered console logs (`error`, `warn`, `info`, uncaught exceptions) |
 | `batch_actions` | Run up to 50 safe DOM/browser actions sequentially on the locked target; returns per-action results and stops on failure by default (`stopOnError:false` continues). |
 | `wait` | Sleep between actions (server-side `ms` delay; no tab round-trip — port `ATTK_PORT` on bridge, default 8765). MCP/HTTP `wait` avoids polling timeout. |
 
@@ -95,6 +97,7 @@ curl -X POST http://127.0.0.1:8765/tool \
 - Target tab is persisted across service-worker suspensions (`chrome.storage.session`).
 - Specter owns every tab in the green `👻 Specter` tab group. Actions never fall back to an unrelated active tab, and tabs outside the group are hidden from `tab_list`.
 - When a tab is locked, it is exclusive: Specter cannot switch to or close any other tab, even one in the Specter group. Unlock first to choose another owned tab.
+- `tab_new` creates a tab in the Specter group and atomically moves the target lock to it, so the agent can use the new tab immediately. Pass `active:false` to keep it in the background.
 - Use **Add current tab to group** to add a tab. If no tab is locked, it becomes the target; an existing lock remains exclusive.
 - Restricted pages (`chrome://`, `edge://`) are rejected cleanly.
 - Content scripts inject on demand (PING-fail fallback) instead of every page you browse.

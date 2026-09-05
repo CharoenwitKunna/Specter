@@ -181,7 +181,7 @@ let executionTail = Promise.resolve();
 const BATCH_ACTIONS = new Set([
   'snapshot', 'find', 'scroll_into_view', 'query', 'get_text', 'get_html',
   'get_stats', 'click', 'click_semantic', 'click_id', 'click_xy', 'type',
-  'key', 'scroll', 'drag', 'wait', 'wait_for'
+  'key', 'scroll', 'drag', 'wait', 'wait_for', 'wait_for_network_idle', 'console_logs'
 ]);
 const MAX_BATCH_ACTIONS = 50;
 function runSerialized(job) {
@@ -363,6 +363,122 @@ async function sendToActive(msg, timeoutMs = 30000) {
     } catch (e) {
       throw new Error(`Cannot inject content script into tab ${tab.id} (${tab.url}): ${e.message}`);
     }
+    // Inject MAIN-world probe for fetch/xhr/console telemetry without CSP interference
+    try {
+      await chrome.scripting.executeScript({
+        target: Number.isInteger(msg.frameId) ? { tabId: tab.id, frameIds: [msg.frameId] } : { tabId: tab.id, frameIds: [0] },
+        world: 'MAIN',
+        func: () => {
+          if (window.__specter_probe_installed) return;
+          window.__specter_probe_installed = true;
+          const token = document.documentElement?.getAttribute('data-specter-telemetry-token') || window.__SPECTER_TELEMETRY_TOKEN__;
+          if (!token) return;
+          const post = (subType, payload = null) => {
+            try { window.postMessage({ type: '__SPECTER_TELEMETRY__', token, subType, payload }, '*'); } catch {}
+          };
+
+          if (typeof window.fetch === 'function') {
+            const origFetch = window.fetch;
+            window.fetch = function(...args) {
+              let tracked = true;
+              try {
+                const u = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+                if (u.includes('127.0.0.1:8765') || u.includes('127.0.0.1:8766')) tracked = false;
+              } catch {}
+              if (tracked) post('req_start');
+              let p;
+              try {
+                p = origFetch.apply(this, args);
+              } catch (err) {
+                if (tracked) post('req_finish');
+                throw err;
+              }
+              return p.finally(() => {
+                if (tracked) post('req_finish');
+              });
+            };
+          }
+
+          if (typeof window.XMLHttpRequest === 'function') {
+            const origOpen = XMLHttpRequest.prototype.open;
+            const origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+              this.__sp_track = !(typeof url === 'string' && (url.includes('127.0.0.1:8765') || url.includes('127.0.0.1:8766')));
+              return origOpen.call(this, method, url, ...rest);
+            };
+            XMLHttpRequest.prototype.send = function(...args) {
+              if (this.__sp_track) {
+                this.__sp_done = false;
+                post('req_start');
+                const finish = () => {
+                  if (!this.__sp_done) {
+                    this.__sp_done = true;
+                    post('req_finish');
+                  }
+                };
+                this.addEventListener('loadend', finish, { once: true });
+                this.addEventListener('error', finish, { once: true });
+                this.addEventListener('abort', finish, { once: true });
+              }
+              try {
+                return origSend.apply(this, args);
+              } catch (err) {
+                if (this.__sp_track && !this.__sp_done) {
+                  this.__sp_done = true;
+                  post('req_finish');
+                }
+                throw err;
+              }
+            };
+          }
+
+          function safeStr(val) {
+            if (val === null || val === undefined) return String(val);
+            if (typeof val === 'string') return val;
+            if (val instanceof Error) return (val.name || 'Error') + ': ' + (val.message || '') + (val.stack ? '\n' + val.stack : '');
+            try {
+              const seen = new WeakSet();
+              return JSON.stringify(val, (k, v) => {
+                if (typeof v === 'object' && v !== null) {
+                  if (seen.has(v)) return '[Circular]';
+                  seen.add(v);
+                }
+                return v;
+              });
+            } catch { return String(val); }
+          }
+
+          if (typeof console === 'object') {
+            ['error', 'warn', 'info'].forEach(level => {
+              const orig = console[level];
+              if (typeof orig === 'function') {
+                console[level] = function(...args) {
+                  try {
+                    const text = args.map(safeStr).join(' ').slice(0, 2000);
+                    post('console', { level, text });
+                  } catch {}
+                  return orig.apply(this, args);
+                };
+              }
+            });
+          }
+
+          window.addEventListener('error', (e) => {
+            try {
+              const text = [e.message || 'Script error', e.filename ? 'at ' + e.filename + ':' + e.lineno : ''].filter(Boolean).join(' ');
+              post('console', { level: 'uncaught_error', text });
+            } catch {}
+          });
+
+          window.addEventListener('unhandledrejection', (e) => {
+            try {
+              const text = e.reason instanceof Error ? e.reason.message : safeStr(e.reason);
+              post('console', { level: 'unhandled_rejection', text });
+            } catch {}
+          });
+        }
+      });
+    } catch {}
     await sleep(50);
   }
   return new Promise((resolve, reject) => {
@@ -462,7 +578,22 @@ async function handleJob(job) {
         break;
       }
       case 'new_tab': {
-        throw new Error('new_tab is disabled: Specter is locked to one tab and cannot create or switch targets');
+        // Creating a tab is a target transition: keep the existing tab in the
+        // Specter group, but move the lock to the newly-created tab so the
+        // caller can use it immediately. `active:false` keeps the browser
+        // selection unchanged while still allowing background automation.
+        const createOptions = { active: job.active !== false };
+        if (job.url !== undefined) {
+          if (!isAllowedUrl(job.url)) throw new Error('new_tab only allows http/https URLs');
+          createOptions.url = job.url;
+        }
+        const tab = await chrome.tabs.create(createOptions);
+        if (!tab?.id) throw new Error('Browser did not return the new tab');
+        await markTabWithAgentGroup(tab.id);
+        targetInvalidated = false;
+        await setTargetTabId(tab.id);
+        result = { ok: true, tabId: tab.id, targetTabId: tab.id, active: tab.active === true, url: tab.url || job.url || '' };
+        break;
       }
       case 'add_to_group': {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -628,6 +759,8 @@ async function handleJob(job) {
         break;
       }
       case 'wait_for': result = await waitForSelector(job.selector, job.timeoutMs ?? 10000, job.frameId); break;
+      case 'wait_for_network_idle': result = await sendToActive({ type: 'CURSOR_NETWORK_IDLE', idleMs: job.idleMs ?? 500, timeoutMs: job.timeoutMs ?? 15000, frameId: job.frameId }); break;
+      case 'console_logs': result = await sendToActive({ type: 'CURSOR_CONSOLE_LOGS', types: job.types, clear: job.clear === true, frameId: job.frameId }); break;
       case 'drag': result = await sendToActive({ type: 'CURSOR_DRAG', from_selector: job.from_selector, from_x: job.from_x, from_y: job.from_y, to_selector: job.to_selector, to_x: job.to_x, to_y: job.to_y, duration: job.duration, frameId: job.frameId }); break;
       default: throw new Error('Unknown action: ' + action);
     }
@@ -723,6 +856,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === 'MCP' || msg.mcp) {
         const cmd = msg.mcp || msg;
         const action = cmd.action || cmd.tool;
+        if (action === 'bridge_status') {
+          const storedPort = await resolveBridgePort();
+          const p = parseInt(new URL(storedPort).port || '8765', 10);
+          let wPort = p < 65535 ? p + 1 : 8766;
+          try {
+            const parsedWs = new URL(WSS_URL);
+            if (parsedWs.port) wPort = parseInt(parsedWs.port, 10);
+          } catch {}
+          return sendResponse({
+            ok: true,
+            result: {
+              port: p,
+              wssPort: wPort,
+              wssHealthy: wssHealthy,
+              reachable: portResolved
+            }
+          });
+        }
         const job = { id: Date.now(), action, source: msg.source || cmd.source || 'internal', ...cmd };
         const res = await runSerialized(job);
         return sendResponse({ ok: true, result: res });

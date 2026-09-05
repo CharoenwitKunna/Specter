@@ -83,6 +83,8 @@ const TOOLS = [
   { name: 'drag', description: 'Drag from source to target (selector or x,y)', inputSchema: { type: 'object', properties: { from_selector: { type: 'string' }, from_x: { type: 'number' }, from_y: { type: 'number' }, to_selector: { type: 'string' }, to_x: { type: 'number' }, to_y: { type: 'number' }, frameId: { type: 'number' } } } },
   { name: 'wait', description: 'Pause / sleep for a duration in milliseconds', inputSchema: { type: 'object', properties: { ms: { type: 'number', description: 'Milliseconds to wait' } }, required: ['ms'] } },
   { name: 'wait_for', description: 'Wait until an element matching the selector exists in the target tab (polls the DOM)', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, timeoutMs: { type: 'number', description: 'Max wait in ms (default 10000, max 30000)' }, frameId: { type: 'number' } }, required: ['selector'] } },
+  { name: 'wait_for_network_idle', description: 'Wait until in-flight fetch and XHR network requests settle (zero active requests for idleMs)', inputSchema: { type: 'object', properties: { idleMs: { type: 'number', description: 'Consecutive quiet milliseconds required (default 500, max 5000)' }, timeoutMs: { type: 'number', description: 'Maximum total wait time in milliseconds (default 15000, max 60000)' }, frameId: { type: 'number' } } } },
+  { name: 'tab_console_logs', description: 'Retrieve buffered browser console logs and uncaught script errors from the target tab', inputSchema: { type: 'object', properties: { types: { type: 'array', items: { type: 'string', enum: ['error', 'warn', 'info', 'uncaught_error', 'unhandled_rejection'] }, description: 'Filter by log types (omitting returns all)' }, clear: { type: 'boolean', description: 'Clear the log buffer after retrieval (default false)' }, frameId: { type: 'number' } } } },
   { name: 'downloads', description: 'List recent browser downloads and their current states', inputSchema: { type: 'object', properties: { limit: { type: 'number' }, state: { type: 'string', enum: ['in_progress', 'complete', 'interrupted'] } } } },
   { name: 'batch_actions', description: 'Run up to 50 safe browser actions sequentially on the locked target tab. Actions use the same tool names and arguments as the individual tools. Results include one entry per action; by default execution stops after the first failed action (set stopOnError:false or continueOnError:true to continue). Target-changing tools and unrestricted eval are not allowed inside a batch.', inputSchema: { type: 'object', properties: { actions: { type: 'array', minItems: 1, maxItems: 50, description: 'Ordered actions, each {tool:string,args:object}', items: { type: 'object', properties: { tool: { type: 'string' }, action: { type: 'string' }, type: { type: 'string' }, args: { type: 'object' } }, oneOf: [{ required: ['tool'] }, { required: ['action'] }, { required: ['type'] }] } }, stopOnError: { type: 'boolean', default: true, description: 'Stop after the first action whose result has ok:false (default true)' }, continueOnError: { type: 'boolean', description: 'Alias for stopOnError:false' } }, required: ['actions'] } },
 ];
@@ -96,7 +98,7 @@ const MAX_BATCH_ACTIONS = 50;
 const BATCH_TOOLS = new Set([
   'tab_snapshot', 'tab_find', 'tab_scroll_into_view', 'tab_query',
   'tab_get_text', 'tab_get_html', 'tab_stats', 'click', 'type', 'key',
-  'scroll', 'drag', 'wait', 'wait_for'
+  'scroll', 'drag', 'wait', 'wait_for', 'wait_for_network_idle', 'tab_console_logs'
 ]);
 
 function isAllowedHttpUrl(url) {
@@ -162,6 +164,19 @@ function toolToAction(name, args) {
       if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 30000) throw Object.assign(new Error('wait_for timeoutMs must be 0-30000'), { status: 400 });
       if (!args.selector) throw Object.assign(new Error('wait_for requires selector'), { status: 400 });
       return { action: 'wait_for', selector: args.selector, timeoutMs, frameId: args.frameId };
+    }
+    case 'wait_for_network_idle': {
+      const idleMs = args.idleMs ?? 500;
+      const timeoutMs = args.timeoutMs ?? 15000;
+      if (!Number.isFinite(idleMs) || idleMs < 50 || idleMs > 5000) throw Object.assign(new Error('wait_for_network_idle idleMs must be 50-5000'), { status: 400 });
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 60000) throw Object.assign(new Error('wait_for_network_idle timeoutMs must be 100-60000'), { status: 400 });
+      return { action: 'wait_for_network_idle', idleMs, timeoutMs, frameId: args.frameId };
+    }
+    case 'tab_console_logs': {
+      return { action: 'console_logs', types: args.types, clear: args.clear === true, frameId: args.frameId };
+    }
+    case 'downloads': {
+      return { action: 'downloads', limit: args.limit, state: args.state };
     }
     case 'batch_actions': {
       if (!Array.isArray(args.actions) || args.actions.length < 1 || args.actions.length > MAX_BATCH_ACTIONS) {

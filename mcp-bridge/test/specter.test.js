@@ -42,8 +42,14 @@ test('DOM inspection caches are short-lived and traversal is bounded', () => {
 test('new tools are exposed and downloads are bounded', () => {
   assert.match(bridge, /name: 'tab_find'/);
   assert.match(bridge, /name: 'tab_visual_snapshot'/);
+  assert.match(bridge, /name: 'wait_for_network_idle'/);
+  assert.match(bridge, /name: 'tab_console_logs'/);
   assert.match(bridge, /name: 'downloads'/);
   assert.match(background, /Math\.min\(100, Math\.max\(1, job\.limit/);
+  assert.match(background, /case 'wait_for_network_idle'/);
+  assert.match(background, /case 'console_logs'/);
+  assert.match(content, /waitForNetworkIdle/);
+  assert.match(content, /getConsoleLogs/);
 });
 
 test('batch actions are bounded, allowlisted, serialized, and report stop state', () => {
@@ -51,6 +57,8 @@ test('batch actions are bounded, allowlisted, serialized, and report stop state'
   assert.match(bridge, /MAX_BATCH_ACTIONS = 50/);
   assert.match(bridge, /BATCH_TOOLS/);
   assert.match(bridge, /stopOnError/);
+  assert.match(bridge, /wait_for_network_idle/);
+  assert.match(bridge, /tab_console_logs/);
   assert.match(background, /case 'batch_actions'/);
   assert.match(background, /BATCH_ACTIONS/);
   assert.match(background, /stoppedAt/);

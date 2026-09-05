@@ -59,7 +59,7 @@ content.js (Injected into active/target tab)
 | Tool | Parameters | Function |
 |---|---|---|
 | `tab_navigate` | `url` | Navigate current target tab |
-| `tab_new` | `url`, `background` | Open a new background tab in Specter group |
+| `tab_new` | `url`, `active` | Open a new tab in the Specter group and move the target lock to it (`active:false` keeps it backgrounded) |
 | `tab_close` | `tabId` (optional) | Close tab |
 | `tab_list` | — | List all open tabs |
 | `tab_switch` | `tabId` | Switch target tab focus |

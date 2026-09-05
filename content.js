@@ -3,6 +3,289 @@
   if (window.__attk_injected) return;
   window.__attk_injected = true;
 
+  // --- Network Idle Tracking ---
+  let activeNetworkRequests = 0;
+  const networkIdleWaiters = new Set();
+
+  function onRequestStarted() {
+    activeNetworkRequests++;
+  }
+
+  function onRequestFinished() {
+    activeNetworkRequests = Math.max(0, activeNetworkRequests - 1);
+    if (activeNetworkRequests === 0) {
+      for (const waiter of networkIdleWaiters) {
+        waiter.check();
+      }
+    }
+  }
+
+  // --- Main-world Telemetry Bridge ---
+  // In MV3, window.fetch, window.XMLHttpRequest, and page console.error occur in
+  // the 'MAIN' execution world. We use a secure per-instance token so rogue page
+  // scripts cannot forge telemetry messages.
+  const TELEMETRY_MSG_TYPE = '__SPECTER_TELEMETRY__';
+  const TELEMETRY_TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  try {
+    document.documentElement.setAttribute('data-specter-telemetry-token', TELEMETRY_TOKEN);
+  } catch {}
+
+  function setupMainWorldTelemetry() {
+    // Listen for telemetry events dispatched from the page's MAIN world with matching token
+    window.addEventListener('message', (event) => {
+      if (event.source !== window || !event.data || event.data.type !== TELEMETRY_MSG_TYPE) return;
+      if (event.data.token !== TELEMETRY_TOKEN) return;
+      const { subType, payload } = event.data;
+      if (subType === 'req_start') {
+        onRequestStarted();
+      } else if (subType === 'req_finish') {
+        onRequestFinished();
+      } else if (subType === 'console') {
+        recordConsoleEntry(payload.level, [payload.text]);
+      }
+    });
+
+    // Fallback inline script injection for MAIN world if scripting.executeScript hasn't run yet
+    try {
+      const probeScript = document.createElement('script');
+      probeScript.setAttribute('data-attk-internal', 'true');
+      probeScript.textContent = `(${function(tok) {
+        if (window.__specter_probe_installed) return;
+        window.__specter_probe_installed = true;
+        const MSG_TYPE = '__SPECTER_TELEMETRY__';
+        const post = (subType, payload = null) => {
+          try { window.postMessage({ type: MSG_TYPE, token: tok, subType, payload }, '*'); } catch {}
+        };
+
+        // 1. Fetch interception
+        if (typeof window.fetch === 'function') {
+          const origFetch = window.fetch;
+          window.fetch = function(...args) {
+            let tracked = true;
+            try {
+              const u = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+              if (u.includes('127.0.0.1:8765') || u.includes('127.0.0.1:8766')) tracked = false;
+            } catch {}
+            if (tracked) post('req_start');
+            let p;
+            try {
+              p = origFetch.apply(this, args);
+            } catch (err) {
+              if (tracked) post('req_finish');
+              throw err;
+            }
+            return p.finally(() => {
+              if (tracked) post('req_finish');
+            });
+          };
+        }
+
+        // 2. XHR interception
+        if (typeof window.XMLHttpRequest === 'function') {
+          const origOpen = XMLHttpRequest.prototype.open;
+          const origSend = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+            this.__sp_track = !(typeof url === 'string' && (url.includes('127.0.0.1:8765') || url.includes('127.0.0.1:8766')));
+            return origOpen.call(this, method, url, ...rest);
+          };
+          XMLHttpRequest.prototype.send = function(...args) {
+            if (this.__sp_track) {
+              this.__sp_done = false;
+              post('req_start');
+              const finish = () => {
+                if (!this.__sp_done) {
+                  this.__sp_done = true;
+                  post('req_finish');
+                }
+              };
+              this.addEventListener('loadend', finish, { once: true });
+              this.addEventListener('error', finish, { once: true });
+              this.addEventListener('abort', finish, { once: true });
+            }
+            try {
+              return origSend.apply(this, args);
+            } catch (err) {
+              if (this.__sp_track && !this.__sp_done) {
+                this.__sp_done = true;
+                post('req_finish');
+              }
+              throw err;
+            }
+          };
+        }
+
+        // 3. Console & Error interception
+        function safeStr(val) {
+          if (val === null || val === undefined) return String(val);
+          if (typeof val === 'string') return val;
+          if (val instanceof Error) return (val.name || 'Error') + ': ' + (val.message || '') + (val.stack ? '\\n' + val.stack : '');
+          try {
+            const seen = new WeakSet();
+            return JSON.stringify(val, (k, v) => {
+              if (typeof v === 'object' && v !== null) {
+                if (seen.has(v)) return '[Circular]';
+                seen.add(v);
+              }
+              return v;
+            });
+          } catch { return String(val); }
+        }
+
+        if (typeof console === 'object') {
+          ['error', 'warn', 'info'].forEach(level => {
+            const orig = console[level];
+            if (typeof orig === 'function') {
+              console[level] = function(...args) {
+                try {
+                  const text = args.map(safeStr).join(' ').slice(0, 2000);
+                  post('console', { level, text });
+                } catch {}
+                return orig.apply(this, args);
+              };
+            }
+          });
+        }
+
+        window.addEventListener('error', (e) => {
+          try {
+            const text = [e.message || 'Script error', e.filename ? 'at ' + e.filename + ':' + e.lineno : ''].filter(Boolean).join(' ');
+            post('console', { level: 'uncaught_error', text });
+          } catch {}
+        });
+
+        window.addEventListener('unhandledrejection', (e) => {
+          try {
+            const text = e.reason instanceof Error ? e.reason.message : safeStr(e.reason);
+            post('console', { level: 'unhandled_rejection', text });
+          } catch {}
+        });
+      }}('${TELEMETRY_TOKEN}');`;
+      (document.head || document.documentElement).appendChild(probeScript);
+      probeScript.remove();
+    } catch {}
+  }
+
+  setupMainWorldTelemetry();
+
+  function waitForNetworkIdle(idleMs = 500, timeoutMs = 15000) {
+    return new Promise((resolve) => {
+      const startTime = performance.now();
+      const deadline = startTime + Math.min(Math.max(100, timeoutMs), 60000);
+      let idleTimer = null;
+      let settled = false;
+
+      const finish = (timedOut = false) => {
+        if (settled) return;
+        settled = true;
+        if (idleTimer) clearTimeout(idleTimer);
+        networkIdleWaiters.delete(waiter);
+        const duration = Math.round(performance.now() - startTime);
+        resolve({
+          ok: !timedOut,
+          waitedMs: duration,
+          inFlight: activeNetworkRequests,
+          timedOut
+        });
+      };
+
+      const isDocumentReady = () => document.readyState === 'complete' || document.readyState === 'interactive';
+
+      const waiter = {
+        check() {
+          if (settled) return;
+          if (activeNetworkRequests === 0 && isDocumentReady()) {
+            if (!idleTimer) {
+              idleTimer = setTimeout(() => finish(false), idleMs);
+            }
+          } else {
+            if (idleTimer) {
+              clearTimeout(idleTimer);
+              idleTimer = null;
+            }
+          }
+        }
+      };
+
+      networkIdleWaiters.add(waiter);
+      const maxTimer = setTimeout(() => finish(true), Math.max(0, deadline - performance.now()));
+
+      // Check if network is already idle and DOM is ready, or wait for readyState
+      const tryInitialIdle = () => {
+        if (activeNetworkRequests === 0 && isDocumentReady()) {
+          idleTimer = setTimeout(() => {
+            clearTimeout(maxTimer);
+            finish(false);
+          }, idleMs);
+        }
+      };
+
+      if (!isDocumentReady()) {
+        document.addEventListener('readystatechange', tryInitialIdle, { once: true });
+      } else {
+        tryInitialIdle();
+      }
+    });
+  }
+
+  // --- Console Logs & Error Telemetry ---
+  const MAX_CONSOLE_LOGS = 100;
+  const consoleLogBuffer = [];
+
+  function safeSerialize(val) {
+    if (val === null || val === undefined) return String(val);
+    if (typeof val === 'string') return val;
+    if (val instanceof Error) return `${val.name}: ${val.message}${val.stack ? '\n' + val.stack : ''}`;
+    try {
+      const seen = new WeakSet();
+      return JSON.stringify(val, (key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) return '[Circular]';
+          seen.add(value);
+          if (value instanceof HTMLElement) {
+            const id = value.id ? `#${value.id}` : '';
+            const cls = value.className && typeof value.className === 'string' ? `.${value.className.trim().split(/\s+/).join('.')}` : '';
+            return `<${value.tagName.toLowerCase()}${id}${cls}>`;
+          }
+        }
+        return value;
+      });
+    } catch {
+      try {
+        if (typeof val === 'object') {
+          const summary = {};
+          for (const k of ['message', 'name', 'status', 'code', 'data']) {
+            if (val[k] !== undefined) summary[k] = val[k];
+          }
+          if (Object.keys(summary).length > 0) return JSON.stringify(summary);
+        }
+      } catch {}
+      return String(val);
+    }
+  }
+
+  function recordConsoleEntry(type, args) {
+    const entry = {
+      type,
+      timestamp: Date.now(),
+      text: args.map(safeSerialize).join(' ').slice(0, 2000)
+    };
+    consoleLogBuffer.push(entry);
+    if (consoleLogBuffer.length > MAX_CONSOLE_LOGS) consoleLogBuffer.shift();
+  }
+
+  function getConsoleLogs(types = null, clear = false) {
+    let logs = consoleLogBuffer;
+    if (types && Array.isArray(types) && types.length > 0) {
+      const typeSet = new Set(types.map(t => String(t).toLowerCase()));
+      logs = logs.filter(l => typeSet.has(l.type));
+    }
+    const result = [...logs];
+    if (clear) {
+      consoleLogBuffer.length = 0;
+    }
+    return { ok: true, count: result.length, logs: result };
+  }
+
   // CSS.escape polyfill for older pages / edge contexts where CSS is undefined
   if (typeof CSS === 'undefined' || !CSS.escape) {
     const _cssEscape = (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
@@ -1789,6 +2072,16 @@
 
         if (msg.type === 'CURSOR_DRAG') {
           const r = await doDrag(msg);
+          return sendResponse(r);
+        }
+
+        if (msg.type === 'CURSOR_NETWORK_IDLE') {
+          const r = await waitForNetworkIdle(msg.idleMs ?? 500, msg.timeoutMs ?? 15000);
+          return sendResponse(r);
+        }
+
+        if (msg.type === 'CURSOR_CONSOLE_LOGS') {
+          const r = getConsoleLogs(msg.types, msg.clear === true);
           return sendResponse(r);
         }
 

@@ -45,7 +45,56 @@ async function getBridgeUrl() {
   return fallback;
 }
 
+async function updateBridgeStatus() {
+  const badge = document.getElementById('bridge-status');
+  if (!badge) return;
+  chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'bridge_status' } }, (res) => {
+    if (chrome.runtime.lastError || !res?.ok || !res?.result) {
+      checkBridgeDirectly(badge);
+      return;
+    }
+    const info = res.result;
+    if (info.wssHealthy) {
+      badge.textContent = `● WSS :${info.wssPort || 8766}`;
+      badge.className = 'bridge-badge bridge-wss';
+      badge.title = `WSS fast-path active on port ${info.wssPort || 8766}`;
+    } else if (info.reachable) {
+      badge.textContent = `● HTTP :${info.port || 8765}`;
+      badge.className = 'bridge-badge bridge-http';
+      badge.title = `HTTP polling fallback active on port ${info.port || 8765}`;
+    } else {
+      badge.textContent = '● Offline';
+      badge.className = 'bridge-badge bridge-offline';
+      badge.title = 'Bridge unreachable';
+    }
+  });
+}
+
+async function checkBridgeDirectly(badge) {
+  for (const p of BRIDGE_PORTS) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${p}/health`, { signal: AbortSignal.timeout(1000) });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.ok) {
+          if (data.wssHealthy) {
+            badge.textContent = `● WSS :${data.wssPort || p + 1}`;
+            badge.className = 'bridge-badge bridge-wss';
+          } else {
+            badge.textContent = `● HTTP :${p}`;
+            badge.className = 'bridge-badge bridge-http';
+          }
+          return;
+        }
+      }
+    } catch {}
+  }
+  badge.textContent = '● Offline';
+  badge.className = 'bridge-badge bridge-offline';
+}
+
 async function updateUI() {
+  updateBridgeStatus();
   // Get background info
   chrome.runtime.sendMessage({ type: 'MCP', source: 'popup', mcp: { action: 'list_tabs' } }, (res) => {
     if (chrome.runtime.lastError || !res?.ok || !res?.result?.tabs) return;
