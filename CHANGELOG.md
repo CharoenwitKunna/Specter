@@ -5,6 +5,19 @@ All notable changes to the Specter browser extension and MCP bridge are document
 ## Unreleased
 
 ### Added
+- Added standard `LICENSE` (MIT) file.
+- Added verified M8ven Trust Index badge to README.
+- Added explicit tool safety annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) across all 26 MCP tools in `bridge.js` to meet M8ven and MCP client catalog specifications.
+- Added contract test verifying all 26 tools declare all 4 hints.
+
+### Fixed
+- Fixed Content Security Policy (CSP) blocking inline telemetry scripts on strict pages by injecting MAIN-world probes via `chrome.scripting.executeScript`.
+- Authenticated extension telemetry messages using a generated per-session postMessage token (`data-specter-telemetry-token`) to prevent message spoofing and cross-script races.
+- Fixed network idle detection (`wait_for_network_idle`) race condition during page transitions by waiting on document `readyState` and properly clearing pending idle timers on active requests.
+- Eliminated duplicate console logging between isolated content script and MAIN-world probe.
+- Guarded XMLHttpRequest tracking state with reuse safety checks (`__sp_done`).
+
+### Added
 - Added the safe `batch_actions` MCP/HTTP tool for up to 50 serialized DOM interactions against the persisted target tab, with per-action results and configurable stop/continue behavior. Target-changing operations, screenshots, downloads, and unrestricted eval are rejected inside batches.
 - Preserved explicit `frameId` routing across batched inspection and interaction actions.
 - Hardened the WSS fast path with application heartbeat, job/result ACKs, bounded exponential reconnect backoff, and replay-safe result caching.
